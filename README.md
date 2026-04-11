@@ -17,8 +17,8 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/goodhal/gbt-code-audit-mcp.git
-cd gbt-code-audit-mcp
+git clone https://github.com/goodhal/gbt-code-audit-skill.git
+cd gbt-code-audit-skill
 
 # 安装 Python 依赖
 pip install -r requirements.txt
