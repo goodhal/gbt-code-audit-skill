@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Java
+*.class
+/*.jar
+/*.war
+/*.ear
+test-samples/**/*.jar
+
+# 虚拟环境
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 测试输出
+*.log
+test_report*.md
+unified_audit_report*.md
+audit_*.md
+
+# 备份文件
+*_backup/
+*_bak/
+*.bak
+
+# SpotBugs 输出
+spotbugs-results/
+findbugs-results/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# 系统文件
+.DS_Store
+Thumbs.db
