@@ -45,6 +45,7 @@ env/
 test_report*.md
 unified_audit_report*.md
 audit_*.md
+!mcp/audit_prompt.md
 
 # 备份文件
 *_backup/
