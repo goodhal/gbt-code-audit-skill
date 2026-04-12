@@ -66,5 +66,8 @@ temp/
 .DS_Store
 Thumbs.db
 
+# 文档目录
+doc/
+
 # 测试脚本（可选）
 # test_spotbugs_validator.py
