@@ -330,25 +330,6 @@ SpotBugs 字节码扫描会返回大量发现，需要 LLM 验证后才能合并
 |----------|----------|
 | CWE 在国标规则中 | ✅ 必须验证并加入报告 |
 | CWE 不在国标规则中，但属于安全相关 | ⚠️ 评估是否需要关注 |
-| CWE 不在国标规则中，且非安全问题 | ❌ 可以丢弃 |
-
-**常见 SpotBugs 发现类型与国标规则对应关系**：
-
-| SpotBugs 类型 | CWE | 国标规则 | 是否计入 |
-|---------------|-----|----------|----------|
-| SQL_INJECTION | CWE-89 | GB/T34944-6.1.1, GB/T39412-8.3.2 | ✅ |
-| COMMAND_INJECTION | CWE-78 | GB/T34944-6.2.1, GB/T39412-8.3.3 | ✅ |
-| PATH_TRAVERSAL_IN | CWE-22 | GB/T34944-6.3.1, GB/T39412-8.2.2 | ✅ |
-| DESERIALIZATION | CWE-502 | GB/T34944-12.1.1, GB/T39412-8.5.1 | ✅ |
-| XXE | CWE-611 | GB/T39412-8.4.1 | ✅ |
-| XSS | CWE-79 | GB/T39412-8.6.1 | ✅ |
-| HARD_CODE_PASSWORD | CWE-259 | GB/T34944-7.2.1, GB/T39412-7.1.3 | ✅ |
-| WEAK_CRYPTO | CWE-327 | GB/T39412-7.1.1 | ✅ |
-| PREDICTABLE_RANDOM | CWE-338 | GB/T39412-7.1.2 | ✅ |
-| RESOURCE_LEAK | CWE-772 | GB/T39412-6.3.1 | ✅ 资源释放问题 |
-| NULL_DEREFERENCE | CWE-476 | GB/T39412-7.4.1 | ✅ 空指针异常 |
-| REC_CATCH_EXCEPTION | CWE-396 | GB/T39412-7.4.2 | ⚠️ 异常处理问题 |
-| SPRING_ENDPOINT | - | - | ❌ 非安全问题 |
 
 **2. 真阳性验证**
 对于符合国标规则的发现，必须读源码验证：

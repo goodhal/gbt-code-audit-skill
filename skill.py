@@ -610,6 +610,8 @@ def main():
                     standard = arg.split("=")[1]
                 elif arg.startswith("--format="):
                     format = arg.split("=")[1]
+                elif not arg.startswith("--"):
+                    standard = arg
         result = get_rules(standard=standard, format=format)
     
     elif command == "scan":
