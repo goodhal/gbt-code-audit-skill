@@ -44,7 +44,6 @@ env/
 *.log
 test_report*.md
 unified_audit_report*.md
-audit_*.md
 
 # 备份文件
 *_backup/
@@ -54,6 +53,7 @@ audit_*.md
 # SpotBugs 输出
 spotbugs-results/
 findbugs-results/
+spotbugs_result.json
 
 # 临时文件
 tmp/
@@ -63,3 +63,6 @@ temp/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 测试脚本（可选）
+# test_spotbugs_validator.py

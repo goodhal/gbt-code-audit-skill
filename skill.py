@@ -243,11 +243,14 @@ def scan(target_path: str, bytecode: bool = False) -> Dict:
     if not target.exists():
         return {"success": False, "error": f"路径不存在: {target_path}"}
 
+    import subprocess
+    import tempfile
+    import os
+    import shutil
+    
+    scan_target_dir = None  # 临时扫描目录
+    
     try:
-        import subprocess
-        import tempfile
-        import os
-        
         # 检查 Java 环境
         try:
             java_version = subprocess.run(
@@ -277,6 +280,18 @@ def scan(target_path: str, bytecode: bool = False) -> Dict:
                 "details": "SpotBugs can only scan Java bytecode files, no .java files found in target directory"
             }
         
+        # 收集所有源文件对应的类文件路径（只扫描这些文件）
+        source_class_paths = set()
+        for java_file in java_files:
+            # 获取相对路径并转换为可能的 .class 文件路径
+            rel_path = java_file.relative_to(target)
+            # 可能的 .class 文件路径（包括内部类）
+            class_base = rel_path.with_suffix('.class')
+            source_class_paths.add(str(class_base))
+            # 内部类模式: Xxx$Inner.class
+            class_stem = rel_path.stem
+            class_parent = rel_path.parent
+        
         # 检查是否有编译好的字节码文件
         class_files = list(target.rglob("*.class"))
         if not class_files:
@@ -284,6 +299,69 @@ def scan(target_path: str, bytecode: bool = False) -> Dict:
                 "success": False,
                 "error": "No compiled Java bytecode files found",
                 "details": "SpotBugs requires compiled .class files to scan, please compile Java code first"
+            }
+        
+        # 创建临时目录，只复制有对应源代码的 .class 文件
+        scan_target_dir = None
+        try:
+            import shutil
+            scan_target_dir = tempfile.mkdtemp(prefix="spotbugs_scan_")
+            copied_count = 0
+            
+            for class_file in class_files:
+                rel_class = class_file.relative_to(target)
+                rel_str = str(rel_class)
+                # 检查是否有对应的源文件（包括内部类）
+                # 内部类: Xxx$Inner.class -> Xxx.java
+                class_name = rel_class.stem
+                if '$' in class_name:
+                    class_name = class_name.split('$')[0]
+                
+                # 查找对应的 .java 文件路径
+                java_rel = rel_class.with_name(class_name + '.java')
+                java_rel_str = str(java_rel)
+                
+                # 检查是否存在对应的源文件
+                has_source = False
+                for src_path in source_class_paths:
+                    if src_path.startswith(str(rel_class.with_suffix('.class'))):
+                        has_source = True
+                        break
+                    # 检查内部类
+                    if rel_str.startswith(str(rel_class.parent / class_name)):
+                        if any(sc.startswith(str(rel_class.parent / class_name)) for sc in [str(p) for p in source_class_paths]):
+                            has_source = True
+                            break
+                
+                # 更简单的判断：检查是否有同名 .java 文件（或内部类对应的外部类）
+                if not has_source:
+                    # 检查源文件列表中是否有对应的类
+                    for java_file in java_files:
+                        java_rel = java_file.relative_to(target)
+                        java_stem = java_rel.stem
+                        if class_name == java_stem:
+                            has_source = True
+                            break
+                
+                if has_source:
+                    # 复制到临时目录，保持目录结构
+                    dest_path = Path(scan_target_dir) / rel_class
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(class_file, dest_path)
+                    copied_count += 1
+            
+            if copied_count == 0:
+                return {
+                    "success": False,
+                    "error": "No .class files with corresponding source code found",
+                    "details": "All .class files are from third-party libraries without source code"
+                }
+        
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to prepare scan directory: {str(e)}",
+                "details": "Error occurred while copying .class files for scanning"
             }
         
         # 检查 SpotBugs JAR 文件是否存在
@@ -305,20 +383,17 @@ def scan(target_path: str, bytecode: bool = False) -> Dict:
         # FindSecurityBugs 插件路径
         findsecbugs_plugin = spotbugs_dir / "findsecbugs-plugin-1.14.0.jar"
         
-        # 执行 SpotBugs 扫描
+        # 执行 SpotBugs 扫描（只扫描有源代码的 .class 文件）
         with tempfile.TemporaryDirectory() as temp_dir:
-            # 构建 SpotBugs 命令（使用 Java 直接运行 JAR 文件）
-            # 使用 -jar 参数直接运行 spotbugs.jar，Java 会自动使用清单文件中指定的主类
-            spotbugs_jar = spotbugs_dir / "spotbugs.jar"
-            # 确保工作目录设置为 spotbugs 目录，这样它可以找到依赖的 JAR 文件
+            # 使用正确的 SpotBugs 主类
             spotbugs_cmd = [
                 "java",
-                "-jar", str(spotbugs_jar),
+                "-cp", classpath_str,
+                "edu.umd.cs.findbugs.FindBugs2",
                 "-pluginList", str(findsecbugs_plugin),
-                "-textui",
                 "-xml:withMessages",
-                "-outputFile", os.path.join(temp_dir, "spotbugs-result.xml"),
-                str(target)
+                "-output", os.path.join(temp_dir, "spotbugs-result.xml"),
+                scan_target_dir  # 扫描临时目录
             ]
             
             # 执行扫描，不设置工作目录，使用绝对路径
@@ -336,7 +411,7 @@ def scan(target_path: str, bytecode: bool = False) -> Dict:
                     tree = ET.parse(result_file)
                     root = tree.getroot()
                     
-                    # 解析 XML 结果
+                    # 解析 XML 结果（不需要再过滤，因为只扫描了有源代码的文件）
                     findings = []
                     for bug_instance in root.findall(".//BugInstance"):
                         bug_type = bug_instance.get("type")
@@ -355,7 +430,7 @@ def scan(target_path: str, bytecode: bool = False) -> Dict:
                                 "cwe": f"CWE-{cwe}" if cwe else "Unknown"
                             })
                     
-                    return {
+                    result_data = {
                         "success": True,
                         "target": str(target),
                         "bytecode": bytecode,
@@ -367,9 +442,17 @@ def scan(target_path: str, bytecode: bool = False) -> Dict:
                             "csharp": 0,
                             "python": 0
                         },
+                        "scanned_classes": copied_count,  # 实际扫描的 .class 文件数
+                        "total_classes": len(class_files),  # 总 .class 文件数
                         "scan_output": scan_result.stdout,
                         "scan_error": scan_result.stderr
                     }
+                    
+                    json_output_path = PROJECT_ROOT / "spotbugs_result.json"
+                    with open(json_output_path, "w", encoding="utf-8") as f:
+                        json.dump(result_data, f, ensure_ascii=False, indent=2)
+                    
+                    return result_data
                 except ET.ParseError as e:
                     return {
                         "success": False,
@@ -390,6 +473,13 @@ def scan(target_path: str, bytecode: bool = False) -> Dict:
             "error": f"扫描过程中发生错误: {str(e)}",
             "details": "请检查 Java 环境和 SpotBugs 配置"
         }
+    finally:
+        # 清理临时扫描目录
+        if scan_target_dir and Path(scan_target_dir).exists():
+            try:
+                shutil.rmtree(scan_target_dir)
+            except Exception:
+                pass
 
 def audit_code(target_path: str, languages: List[str] = None, standards: List[str] = None) -> Dict:
     """使用 LLM 对代码进行安全审计"""
