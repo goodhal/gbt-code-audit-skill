@@ -154,17 +154,15 @@ def get_rule_count(standard: str) -> int:
         return 0
 
 
-def get_rules(standard: str = "34944", format: str = "summary") -> Dict:
+def get_rules(standard: str = "34944") -> Dict:
     """获取标准的完整规则"""
     try:
         rules = []
         
-        # 首先读取传入的标准号对应的规则
         if standard in STANDARD_FILES:
             rules_file = RULES_DIR / STANDARD_FILES[standard]
             if rules_file.exists():
                 content = rules_file.read_text(encoding="utf-8")
-                # 匹配规则块
                 pattern = re.compile(
                     r"^###\s+问题分类(GB/T\d+-\d+[\d.-]*)\s+.*?\n"
                     r"\*\*严重级别\*\*[：:]\s*(\w+)"
@@ -183,24 +181,23 @@ def get_rules(standard: str = "34944", format: str = "summary") -> Dict:
                     cwe = m.group(3)
                     sev = sev_map.get(sev_raw, "中危")
 
-                    # 提取规则名
                     title_match = re.search(rf"^###\s+问题分类{re.escape(code)}\s+(.*?)\s*$", content, re.MULTILINE)
                     name = ""
                     if title_match:
                         name = re.sub(r"[🔴🟠🟡🟢🔵⚪\s]+", "", title_match.group(1)).strip()
 
-                    rule = {"code": code, "cwe": cwe, "name": name, "severity": sev}
+                    block_start = m.start()
+                    next_rule = re.search(r"^### ", content[m.end():], re.MULTILINE)
+                    block_end = m.end() + next_rule.start() if next_rule else len(content)
                     
-                    if format == "full":
-                        # 提取完整块内容
-                        block_start = m.start()
-                        next_rule = re.search(r"^### ", content[m.end():], re.MULTILINE)
-                        block_end = m.end() + next_rule.start() if next_rule else len(content)
-                        rule["description"] = content[block_start:block_end].strip()
-                    
-                    rules.append(rule)
+                    rules.append({
+                        "code": code,
+                        "cwe": cwe,
+                        "name": name,
+                        "severity": sev,
+                        "description": content[block_start:block_end].strip()
+                    })
         
-        # 如果没有规则，返回错误
         if not rules:
             return {
                 "success": False,
@@ -521,10 +518,9 @@ def audit_code(target_path: str, languages: List[str] = None, standards: List[st
     if not code_files:
         return {"success": False, "error": "未找到代码文件"}
     
-    # 构建规则信息
     rules_info = []
     for std in standards:
-        std_rules = get_rules(standard=std, format="summary")
+        std_rules = get_rules(standard=std)
         if std_rules["success"]:
             rules_info.append({
                 "standard": std,
@@ -532,44 +528,15 @@ def audit_code(target_path: str, languages: List[str] = None, standards: List[st
                 "rules": std_rules["rules"]
             })
     
-    # 构建代码审计请求
-    audit_request = {
+    return {
+        "success": True,
         "target": str(target),
         "languages": languages,
         "standards": standards,
-        "code_files": [str(f) for f in code_files[:50]],  # 限制文件数量
+        "code_files": [str(f) for f in code_files[:50]],
         "file_count": len(code_files),
         "rules_info": rules_info,
-        "instructions": """
-请按照以下步骤进行代码安全审计：
-1. 分析提供的代码文件，识别潜在的安全漏洞
-2. 对照相关国家标准规则，对每个漏洞进行分类和评级
-3. 提供详细的漏洞描述、风险分析和修复建议
-4. 生成符合标准格式的审计报告
-
-重点关注以下类型的安全问题：
-- 输入验证与数据清洗
-- 错误处理与异常安全
-- 代码质量与内存管理
-- 封装与序列化安全
-- Web 安全（XSS、CSRF、SSRF）
-- SQL/命令/代码注入
-- 敏感数据保护
-- 加密与密钥管理
-- 线程安全与并发
-- 会话管理
-
-请确保审计结果符合中国国家标准（GB/T 34943/34944/34946/39412）的要求。
-
-详细审计指南和报告格式请参考 SKILL.md 中的"报告生成规则"章节。
-"""
-    }
-    
-    return {
-        "success": True,
-        "audit_request": audit_request,
-        "message": "代码审计请求已准备就绪，请使用 LLM 进行智能审计",
-        "hint": "请将此请求传递给 LLM，并根据 LLM 的输出生成最终审计报告"
+        "message": "代码审计信息已准备就绪，请参考 SKILL.md 进行智能审计"
     }
 
 
@@ -602,17 +569,8 @@ def main():
         result = get_standards(languages=languages, target_path=target)
     
     elif command == "get_rules":
-        standard = "34944"
-        format = "summary"
-        if len(sys.argv) > 2:
-            for arg in sys.argv[2:]:
-                if arg.startswith("--standard="):
-                    standard = arg.split("=")[1]
-                elif arg.startswith("--format="):
-                    format = arg.split("=")[1]
-                elif not arg.startswith("--"):
-                    standard = arg
-        result = get_rules(standard=standard, format=format)
+        standard = sys.argv[2] if len(sys.argv) > 2 else "34944"
+        result = get_rules(standard=standard)
     
     elif command == "scan":
         if len(sys.argv) < 3:

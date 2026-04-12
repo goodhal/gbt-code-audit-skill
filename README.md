@@ -41,36 +41,36 @@ javac -d ./bin ./src/**/*.java
 
 在 Trae IDE 中加载技能，然后按照以下流程使用：
 
-```python
+```bash
 # 第0步：阅读 SKILL.md 中的「报告生成规则」章节，学习审计流程
 
 # 第1步：检测代码语言
-detect_language(target="/path/to/code")
+python skill.py detect_language /path/to/code
 
 # 第2步：获取适用标准
-get_standards(languages=["java", "python"])
+python skill.py get_standards --languages=java,python
 
-# 第3步：学习标准规则
-get_rules(standard="34944", format="summary")
+# 第3步：学习标准规则（standard: 34943/34944/34946/39412）
+python skill.py get_rules 39412
 
 # 第4步：执行工具扫描
-scan(target="/path/to/java-project", bytecode=True)
+python skill.py scan /path/to/java-project --bytecode
 
 # 第5步：智能审计
-audit_code(target="/path/to/code")
+python skill.py audit_code /path/to/code
 
 # 第6步：获取报告模板
-get_report_template()
+python skill.py get_report_template
 ```
 
 ## 支持的标准
 
-| 标准              | 语言    | 规则数 |
-| --------------- | ----- | --: |
-| GB/T 34943-2017 | C/C++ |  32 |
-| GB/T 34944-2017 | Java  |  44 |
-| GB/T 34946-2017 | C#    |  44 |
-| GB/T 39412-2020 | 通用    |  97 |
+| 标准 | 语言 | 规则数 |
+|------|------|-------:|
+| GB/T 34943-2017 | C/C++ | 32 |
+| GB/T 34944-2017 | Java | 44 |
+| GB/T 34946-2017 | C# | 44 |
+| GB/T 39412-2020 | 通用 | 97 |
 
 覆盖：
 

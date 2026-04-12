@@ -44,6 +44,8 @@ env/
 *.log
 test_report*.md
 unified_audit_report*.md
+audit_report.md
+spotbugs_result.json
 
 # 备份文件
 *_backup/
