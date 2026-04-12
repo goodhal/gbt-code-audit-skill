@@ -220,33 +220,10 @@ def get_rules(standard: str = "34944", format: str = "summary") -> Dict:
         return {"success": False, "error": str(e)}
 
 
-def get_audit_prompt() -> Dict:
-    """返回完整的 audit_prompt.md 内容，供 LLM 参考"""
-    prompt_file = PROJECT_ROOT / "mcp" / "audit_prompt.md"
-
-    if not prompt_file.exists():
-        return {
-            "success": False,
-            "error": "audit_prompt.md 文件不存在",
-            "hint": "请确保 audit_prompt.md 在 mcp/ 目录下"
-        }
-
-    try:
-        content = prompt_file.read_text(encoding="utf-8")
-        return {
-            "success": True, 
-            "prompt": content, 
-            "source": "audit_prompt.md",
-            "message": "提示词读取成功，请按照审计指南中的步骤执行后续操作"
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
 def get_report_template() -> Dict:
     """返回标准的报告模板，供 LLM 生成报告时参考"""
     try:
-        template_file = PROJECT_ROOT / "mcp" / "report_template.md"
+        template_file = PROJECT_ROOT / "report_template.md"
         
         if not template_file.exists():
             return {
@@ -450,11 +427,6 @@ def audit_code(target_path: str, languages: List[str] = None, standards: List[st
     if not code_files:
         return {"success": False, "error": "未找到代码文件"}
     
-    # 构建审计提示
-    audit_prompt = get_audit_prompt()
-    if not audit_prompt["success"]:
-        return audit_prompt
-    
     # 构建规则信息
     rules_info = []
     for std in standards:
@@ -474,7 +446,6 @@ def audit_code(target_path: str, languages: List[str] = None, standards: List[st
         "code_files": [str(f) for f in code_files[:50]],  # 限制文件数量
         "file_count": len(code_files),
         "rules_info": rules_info,
-        "audit_guideline": audit_prompt["prompt"],
         "instructions": """
 请按照以下步骤进行代码安全审计：
 1. 分析提供的代码文件，识别潜在的安全漏洞
@@ -495,6 +466,8 @@ def audit_code(target_path: str, languages: List[str] = None, standards: List[st
 - 会话管理
 
 请确保审计结果符合中国国家标准（GB/T 34943/34944/34946/39412）的要求。
+
+详细审计指南和报告格式请参考 SKILL.md 中的"报告生成规则"章节。
 """
     }
     
@@ -554,9 +527,6 @@ def main():
         if len(sys.argv) > 3 and sys.argv[3] == "--bytecode":
             bytecode = True
         result = scan(target_path=target, bytecode=bytecode)
-    
-    elif command == "get_audit_prompt":
-        result = get_audit_prompt()
     
     elif command == "get_report_template":
         result = get_report_template()

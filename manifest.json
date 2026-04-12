@@ -84,14 +84,6 @@
       }
     },
     {
-      "name": "get_audit_prompt",
-      "description": "获取审计流程和完整的审计指南",
-      "parameters": {
-        "type": "object",
-        "properties": {}
-      }
-    },
-    {
       "name": "get_report_template",
       "description": "返回标准的报告模板，供生成报告时参考",
       "parameters": {

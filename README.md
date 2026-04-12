@@ -42,8 +42,7 @@ javac -d ./bin ./src/**/*.java
 在 Trae IDE 中加载技能，然后按照以下流程使用：
 
 ```python
-# 第0步：获取审计指南，学习审计流程
-get_audit_prompt()
+# 第0步：阅读 SKILL.md 中的「报告生成规则」章节，学习审计流程
 
 # 第1步：检测代码语言
 detect_language(target="/path/to/code")
@@ -148,9 +147,7 @@ gbt-code-audit-skill/
 │   ├── GBT_34944-2017.md
 │   ├── GBT_34946-2017.md
 │   └── GBT_39412-2020.md
-├── mcp/                   # 必要的配置文件
-│   ├── audit_prompt.md    # 审计提示词
-│   └── report_template.md # 报告模板
+├── report_template.md     # 报告模板
 ├── test-samples/          # 测试样例
 │   ├── cpp/
 │   ├── csharp/
@@ -163,7 +160,7 @@ gbt-code-audit-skill/
 ## 审计流程
 
 ```
-0️⃣ 学习流程     → 调用 get_audit_prompt → 获取审计指南，学习审计流程
+0️⃣ 学习流程     → 阅读 SKILL.md「报告生成规则」章节 → 学习审计流程和格式要求
 1️⃣ 语言判定     → 调用 detect_language → 得到适用标准（包含39412通用基线）
 2️⃣ 学习标准     → 调用 get_rules → 读取规则文件，输出「已学习标准」确认
 3️⃣ 双轨扫描     → 调用 scan（SpotBugs 字节码扫描） + LLM 遍历所有源文件审计
@@ -176,7 +173,6 @@ gbt-code-audit-skill/
 
 | 工具名称 | 描述 | 参数 |
 |---------|------|------|
-| `get_audit_prompt` | 获取审计流程和完整的审计指南 | 无 |
 | `detect_language` | 检测代码目录使用的语言，返回语言列表和对应的标准 | `target` (目标代码目录路径) |
 | `get_standards` | 获取语言对应的审计标准 | `languages` (语言列表，可选)、`target` (目标目录，可选) |
 | `get_rules` | 获取标准的完整规则列表 | `standard` (标准代码，默认 34944)、`format` (输出格式，默认 summary) |
@@ -197,7 +193,7 @@ gbt-code-audit-skill/
 
 1. 使用前请确保已安装 Java 8+（用于 SpotBugs 字节码扫描）
 2. 对于 Java 项目，需要先编译生成 .class 文件才能进行字节码扫描
-3. 审计前请先调用 `get_audit_prompt` 获取完整的审计指南
+3. 审计前请先阅读 SKILL.md 中的「报告生成规则（强制）」章节
 4. 多语言项目会自动加载多个标准文件，规则间会自动去重
 5. 生成报告时请使用 `get_report_template` 获取标准模板，确保报告格式合规
 
