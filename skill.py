@@ -302,6 +302,9 @@ def scan(target_path: str, bytecode: bool = False) -> Dict:
             classpath.append(str(jar_file))
         classpath_str = ";".join(classpath)  # Windows 用分号分隔
         
+        # FindSecurityBugs 插件路径
+        findsecbugs_plugin = spotbugs_dir / "findsecbugs-plugin-1.14.0.jar"
+        
         # 执行 SpotBugs 扫描
         with tempfile.TemporaryDirectory() as temp_dir:
             # 构建 SpotBugs 命令（使用 Java 直接运行 JAR 文件）
@@ -311,6 +314,7 @@ def scan(target_path: str, bytecode: bool = False) -> Dict:
             spotbugs_cmd = [
                 "java",
                 "-jar", str(spotbugs_jar),
+                "-pluginList", str(findsecbugs_plugin),
                 "-textui",
                 "-xml:withMessages",
                 "-outputFile", os.path.join(temp_dir, "spotbugs-result.xml"),
