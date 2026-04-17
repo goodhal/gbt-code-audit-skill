@@ -1,10 +1,10 @@
 {
-  "name": "code-security-audit",
-  "version": "1.0.0",
-  "description": "基于中国国家标准的代码安全审计技能，支持多语言代码安全漏洞检测",
+  "name": "gbt-code-audit-skill",
+  "version": "2.0.0",
+  "description": "基于中国国家标准（GB/T）的代码安全审计技能，支持多语言代码安全漏洞检测，利用 Agent 的 LLM 能力进行智能审计",
   "author": "Code Audit Team",
-  "tags": ["security", "code-audit", "gbt", "vulnerability-detection"],
-  "keywords": ["code security", "audit", "vulnerability", "gbt", "china standard"],
+  "tags": ["security", "code-audit", "gbt", "vulnerability-detection", "china-standard"],
+  "keywords": ["code security", "audit", "vulnerability", "gbt", "china standard", "static analysis"],
   "icon": "https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=code%20security%20audit%20shield%20icon&image_size=square",
   "requirements": {
     "python": ">=3.7"
@@ -12,8 +12,8 @@
   "main": "skill.py",
   "tools": [
     {
-      "name": "detect_language",
-      "description": "检测代码目录使用的语言，返回语言列表和对应的标准",
+      "name": "quick_scan",
+      "description": "快速扫描：使用正则表达式模式匹配检测常见漏洞，提供基线结果",
       "parameters": {
         "type": "object",
         "properties": {
@@ -26,93 +26,34 @@
       }
     },
     {
-      "name": "get_standards",
-      "description": "获取语言对应的审计标准",
+      "name": "finalize_report",
+      "description": "收尾报告：遍历 Markdown 文件去重并生成审计报告，自动清空 findings 目录",
       "parameters": {
         "type": "object",
         "properties": {
-          "languages": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "语言列表（可选）"
+          "output": {
+            "type": "string",
+            "description": "报告输出路径（可选，默认生成带时间戳的文件名）"
           },
-          "target": {
+          "project": {
             "type": "string",
-            "description": "目标目录（可选，用于自动检测语言）"
-          }
-        }
-      }
-    },
-    {
-      "name": "get_rules",
-      "description": "获取标准的完整规则列表",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "standard": {
-            "type": "string",
-            "description": "标准代码：34943/34944/34946/39412",
-            "default": "34944"
-          },
-          "format": {
-            "type": "string",
-            "enum": ["summary", "full"],
-            "description": "输出格式",
-            "default": "summary"
-          }
-        },
-        "required": ["standard"]
-      }
-    },
-    {
-      "name": "scan",
-      "description": "执行工具扫描（SpotBugs 字节码扫描）",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "target": {
-            "type": "string",
-            "description": "目标代码目录路径"
-          },
-          "bytecode": {
-            "type": "boolean",
-            "description": "是否执行字节码扫描",
-            "default": false
-          }
-        },
-        "required": ["target"]
-      }
-    },
-    {
-      "name": "get_report_template",
-      "description": "返回标准的报告模板，供生成报告时参考",
-      "parameters": {
-        "type": "object",
-        "properties": {}
-      }
-    },
-    {
-      "name": "audit_code",
-      "description": "使用 LLM 对代码进行安全审计",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "target": {
-            "type": "string",
-            "description": "目标代码目录路径"
+            "description": "项目名称（可选，默认从文件推断）"
           },
           "languages": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "代码语言（可选）"
+            "description": "语言列表（可选，默认从文件推断）"
           },
           "standards": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "审计标准（可选）"
+            "description": "标准列表（可选，默认从文件推断）"
+          },
+          "date": {
+            "type": "string",
+            "description": "审计日期（可选，默认使用当前日期）"
           }
-        },
-        "required": ["target"]
+        }
       }
     }
   ]

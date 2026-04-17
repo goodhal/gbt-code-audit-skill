@@ -23,9 +23,11 @@ wheels/
 # Java
 *.class
 /*.jar
+!vulnerable-java.jar
 /*.war
 /*.ear
 test-samples/**/*.jar
+!vendor/**/*.jar
 
 # 虚拟环境
 venv/
@@ -39,12 +41,18 @@ env/
 *.swp
 *.swo
 *~
+.workbuddy/
+.trae/
+.ruff_cache/
 
-# 测试输出
+# 审计产物
+findings/
 *.log
 test_report*.md
 unified_audit_report*.md
-audit_report.md
+audit_report*.md
+GBT_*.md
+scan_result.json
 spotbugs_result.json
 
 # 备份文件

@@ -4,96 +4,66 @@ using System.Data.SqlClient;
 using System.IO;
 using System.Web;
 using System.Web.Mvc;
+using System.Security.Cryptography;
+using System.Xml;
+using System.Xml.XPath;
+using System.Runtime.Serialization.Formatters.Binary;
+using System.Net;
+using System.Text;
+using System.Threading;
 
 /**
  * C#代码安全测试样例
- * 覆盖 GB/T 34946-2017 所有章节
+ * 覆盖 GB/T 34946-2017 所有规则
+ * 规则编号对应标准章节
  */
 
 namespace VulnerableApp
 {
-    // ========== 第10章 错误处理 ==========
-
-    // [10.1] 空catch块
-    public class ErrorHandling
+    public class VulnerableCSharp
     {
-        public void EmptyCatchBlock()
+        // ========== 6.2.1 行为问题 ==========
+
+        // [GB/T34946-6.2.1.1] 不可控的内存分配 🟠 HIGH
+        public void UncontrolledMemoryAllocation(int size)
         {
-            try
-            {
-                int.Parse("abc");
-            }
-            catch (Exception)
-            {
-                // 空catch块，静默忽略
-            }
+            byte[] data = new byte[size];  // size来自用户输入，无上限检查
         }
 
-        // [10.2] 错误信息泄露
-        public void ExposeErrorDetails(Exception ex)
-        {
-            Response.Write("Error: " + ex.ToString());  // 泄露详细信息
-            Response.Write("StackTrace: " + ex.StackTrace);
-        }
-    }
+        // ========== 6.2.2 路径错误 ==========
 
-    // ========== 第11章 代码质量 ==========
-
-    public class CodeQuality
-    {
-        // [11.1] 空指针解引用
-        public string NullPointerRisk(Dictionary<string, string> config)
+        // [GB/T34946-6.2.2.1] 不可信的搜索路径 🟡 MEDIUM
+        public void UntrustedSearchPath(string command)
         {
-            return config["key"].ToLower();  // NPE风险
+            Process.Start(command);  // PATH可能被依赖，DLL劫持风险
         }
 
-        // [11.2] 资源未关闭
-        public void ResourceLeak()
-        {
-            SqlConnection conn = new SqlConnection("Server=localhost;Database=test;User=sa;Password=pass");
-            conn.Open();
-            SqlCommand cmd = new SqlCommand("SELECT * FROM users", conn);
-            SqlDataReader reader = cmd.ExecuteReader();
-            // 没有using或finally关闭连接
-        }
-    }
+        // ========== 6.2.3 数据处理 ==========
 
-    // ========== 第12章 封装 ==========
-
-    public class Encapsulation
-    {
-        // [12.1] 不安全反序列化
-        public object UnsafeDeserialization(byte[] data)
+        // [GB/T34946-6.2.3.1] 相对路径遍历 🟠 HIGH
+        public void RelativePathTraversal(string filename)
         {
-            System.Runtime.Serialization.Formatters.Binary.BinaryFormatter bf =
-                new System.Runtime.Serialization.Formatters.Binary.BinaryFormatter();
-            return bf.Deserialize(new MemoryStream(data));  // 反序列化RCE
+            string path = Path.Combine("/var/www/uploads/", filename);  // filename可能包含../
+            string content = File.ReadAllText(path);
         }
 
-        // [12.2] 动态代码执行
-        public object DynamicCodeExecution(string code)
+        // [GB/T34946-6.2.3.2] 绝对路径遍历 🟠 HIGH
+        public void AbsolutePathTraversal(string path)
         {
-            return Microsoft.CSharp.CSharpCodeProvider.CreateProvider("C#")
-                .CompileAssemblyFromSource(
-                    new System.CodeDom.Compiler.CompilerParameters(),
-                    code);  // 动态编译执行
-        }
-    }
-
-    // ========== 第14章 Web安全 ==========
-
-    public class WebSecurity : Controller
-    {
-        // [14.1] XSS漏洞
-        public ActionResult XssVulnerability(string name)
-        {
-            return Content("Hello " + name);  // 直接输出，未转义
+            string content = File.ReadAllText(path);  // 直接使用用户输入作为绝对路径
         }
 
-        // [14.2] SQL注入
+        // [GB/T34946-6.2.3.3] 命令注入 🔴 CRITICAL
+        public void CommandInjection(string filename)
+        {
+            Process.Start("cmd.exe", "/c type " + filename);  // 命令拼接
+            Process.Start("ls", "-la " + filename);  // 参数拼接
+        }
+
+        // [GB/T34946-6.2.3.4] SQL注入 🔴 CRITICAL
         public void SqlInjection(string userId)
         {
-            string sql = "SELECT * FROM users WHERE id = " + userId;  // SQL注入
+            string sql = "SELECT * FROM users WHERE id = " + userId;  // SQL拼接
             using (SqlConnection conn = new SqlConnection("connection_string"))
             {
                 SqlCommand cmd = new SqlCommand(sql, conn);
@@ -102,107 +72,310 @@ namespace VulnerableApp
             }
         }
 
-        // [14.3] 命令注入
-        public void CommandInjection(string filename)
+        // [GB/T34946-6.2.3.5] 代码注入 🔴 CRITICAL
+        public object CodeInjection(string code)
         {
-            Process.Start("cmd.exe", "/c type " + filename);  // 命令注入
+            return Microsoft.CSharp.CSharpCodeProvider.CreateProvider("C#")
+                .CompileAssemblyFromSource(
+                    new System.CodeDom.Compiler.CompilerParameters(),
+                    code);  // 动态编译执行用户代码
         }
 
-        // [14.4] LDAP注入
-        public void LdapInjection(string username)
+        // [GB/T34946-6.2.3.6] 进程控制 🟠 HIGH
+        public void ProcessControl(string libraryPath)
         {
-            string ldapQuery = "(uid=" + username + ")";  // LDAP注入
+            System.Reflection.Assembly.LoadFrom(libraryPath);  // 加载用户指定的DLL
         }
 
-        // [14.5] 路径遍历
-        public void PathTraversal(string filename)
+        // [GB/T34946-6.2.3.7] 信息通过错误消息泄露 🟡 MEDIUM
+        public void InfoLeakViaErrorMsg(Exception ex, HttpResponse resp)
         {
-            string path = Path.Combine("/var/www/uploads/", filename);
-            string content = File.ReadAllText(path);  // 路径遍历
-        }
-    }
-
-    // ========== 第15章 数据保护 ==========
-
-    public class DataProtection
-    {
-        // [15.1] 硬编码密钥
-        private const string AES_KEY = "1234567890abcdef";  // 硬编码密钥
-
-        // [15.2] 敏感数据日志
-        public void LogSensitiveData(string password)
-        {
-            Console.WriteLine("Password reset: " + password);  // 密码日志
+            resp.Write("Error: " + ex.ToString());  // 泄露异常详情
+            resp.Write("StackTrace: " + ex.StackTrace);
         }
 
-        // [15.3] ViewState未加密
-        public void UnencryptedViewState()
+        // [GB/T34946-6.2.3.8] 信息通过服务器日志文件泄露 🟡 MEDIUM
+        public void InfoLeakViaServerLog(string password)
         {
-            // ViewState.EnableViewStateMac = false;
-            // ViewStateEncryptionMode = ViewStateEncryptionMode.Never;
-        }
-    }
-
-    // ========== 第16章 线程安全 ==========
-
-    public class ThreadSafety
-    {
-        private int counter = 0;
-        private static int staticCounter = 0;
-
-        // [16.1] 竞态条件
-        public void RaceCondition()
-        {
-            int temp = counter;
-            // 其他线程可能修改counter
-            counter = temp + 1;
+            System.Diagnostics.Trace.WriteLine("User login with password: " + password);  // 密码写入日志
         }
 
-        // [16.2] 非线程安全单例
-        private static ThreadSafety instance;
-
-        public static ThreadSafety GetInstance()
+        // [GB/T34946-6.2.3.9] 信息通过调试日志文件泄露 🟡 MEDIUM
+        public void InfoLeakViaDebugLog(string token)
         {
-            if (instance == null)  // 竞态条件
+            System.Diagnostics.Debug.WriteLine("Token value: " + token);  // 调试日志包含敏感信息
+        }
+
+        // [GB/T34946-6.2.3.10] 信息通过持久Cookie泄露 🟠 HIGH
+        public void InfoLeakViaPersistentCookie(HttpResponse resp, string username)
+        {
+            HttpCookie cookie = new HttpCookie("username", username);  // 敏感信息存入Cookie
+            cookie.Expires = DateTime.Now.AddDays(14);  // 持久化Cookie
+            resp.Cookies.Add(cookie);
+        }
+
+        // [GB/T34946-6.2.3.11] 未检查的输入作为循环条件 🟡 MEDIUM
+        public void UncheckedLoopCondition(int count)
+        {
+            for (int i = 0; i < count; i++)  // count来自用户输入，无上限检查
             {
-                instance = new ThreadSafety();
+                ProcessItem(i);
             }
-            return instance;
         }
-    }
 
-    // ========== 第17章 XML注入 ==========
-
-    public class XmlInjection
-    {
-        // [17.1] XXE
-        public void XxeVulnerability(string xml)
+        // [GB/T34946-6.2.3.12] XPath注入 🟠 HIGH
+        public void XPathInjection(string userInput)
         {
             XmlDocument doc = new XmlDocument();
-            doc.LoadXml(xml);  // XXE
+            doc.Load("users.xml");
+            string expression = "/users/user[name='" + userInput + "']";  // XPath拼接
+            XPathNavigator nav = doc.CreateNavigator();
+            XPathNodeIterator iter = nav.Select(expression);
         }
-    }
 
-    // ========== 第18章 日志输出 ==========
+        // ========== 6.2.4 处理程序错误 ==========
 
-    public class Logging
-    {
-        // [18.1] 日志注入
-        public void LogInjection(string userInput)
+        // [GB/T34946-6.2.4.1] 未限制危险类型文件的上传 🟠 HIGH
+        public void UnrestrictedFileUpload(string filename, byte[] content)
         {
-            Console.WriteLine("User input: " + userInput);  // 日志注入
+            File.WriteAllBytes("/uploads/" + filename, content);  // 未检查文件类型
         }
-    }
 
-    // ========== 第19章 CSRF ==========
+        // ========== 6.2.5 不充分的封装 ==========
 
-    public class CsrfVulnerability : Controller
-    {
-        // [19.1] CSRF
-        public ActionResult TransferMoney(string to, decimal amount)
+        // [GB/T34946-6.2.5.1] 违反信任边界 🟡 MEDIUM
+        public void TrustBoundaryViolation(HttpRequest req, HttpSessionState session)
+        {
+            string username = req["username"];  // 不可信数据
+            session["username"] = username;  // 直接存入session，未验证
+        }
+
+        // ========== 6.2.6 安全功能 ==========
+
+        // [GB/T34946-6.2.6.1] 明文存储口令 🔴 CRITICAL
+        public void PlaintextPasswordStorage(string password)
+        {
+            string sql = "INSERT INTO users (password) VALUES ('" + password + "')";  // 明文存储
+            using (SqlConnection conn = new SqlConnection("connection_string"))
+            {
+                SqlCommand cmd = new SqlCommand(sql, conn);
+                conn.Open();
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        // [GB/T34946-6.2.6.2] 存储可恢复的口令 🔴 CRITICAL
+        public void RecoverablePasswordStorage(string password)
+        {
+            // AES对称加密存储口令（可逆）
+            Aes aes = Aes.Create();
+            aes.Key = Encoding.UTF8.GetBytes("fixedKey12345678");  // 固定密钥
+            byte[] encrypted = aes.CreateEncryptor().TransformFinalBlock(
+                Encoding.UTF8.GetBytes(password), 0, password.Length);
+            // 存储encrypted到数据库
+        }
+
+        // [GB/T34946-6.2.6.3] 口令硬编码 🔴 CRITICAL
+        private const string HARDCODED_PASSWORD = "admin123";  // 硬编码口令
+        private const string DB_PASSWORD = "Server=localhost;Password=hardcoded_pass";  // 硬编码数据库密码
+        
+        public bool CheckHardcodedPassword(string input)
+        {
+            return HARDCODED_PASSWORD == input;  // 硬编码比对
+        }
+
+        // [GB/T34946-6.2.6.4] 依赖Referer字段进行身份鉴别 🟠 HIGH
+        public bool RefererAuthentication(HttpRequest req)
+        {
+            string referer = req.Headers["referer"];  // 依赖referer进行身份鉴别
+            return referer != null && referer.Contains("trusted-domain.com");
+        }
+
+        // [GB/T34946-6.2.6.5] Cookie中的敏感信息明文存储 🟠 HIGH
+        public void SensitiveDataInCookie(HttpResponse resp)
+        {
+            HttpCookie cookie = new HttpCookie("creditCard", "1234-5678-9012-3456");  // 明文敏感信息
+            resp.Cookies.Add(cookie);
+        }
+
+        // [GB/T34946-6.2.6.6] 敏感信息明文传输 🔴 CRITICAL
+        public void PlaintextTransmission(string password)
+        {
+            // HTTP明文传输敏感信息（未使用HTTPS）
+            WebClient client = new WebClient();
+            client.DownloadString("http://api.example.com/login?password=" + password);
+        }
+
+        // [GB/T34946-6.2.6.7] 使用已破解或危险的加密算法 🟠 HIGH
+        public void WeakEncryptionAlgorithm(string data)
+        {
+            DES des = DES.Create();  // DES已被破解
+            des.Key = Encoding.UTF8.GetBytes("12345678");
+            byte[] encrypted = des.CreateEncryptor().TransformFinalBlock(
+                Encoding.UTF8.GetBytes(data), 0, data.Length);
+        }
+
+        // [GB/T34946-6.2.6.8] 可逆的散列算法 🟠 HIGH
+        public string ReversibleHashAlgorithm(string password)
+        {
+            using (SHA1 sha1 = SHA1.Create())  // SHA-1已被破解
+            {
+                byte[] hash = sha1.ComputeHash(Encoding.UTF8.GetBytes(password));
+                return Convert.ToBase64String(hash);
+            }
+        }
+
+        // [GB/T34946-6.2.6.9] 密码分组链接模式未使用随机初始化矢量 🟡 MEDIUM
+        public void CbcWithoutRandomIV(string data)
+        {
+            byte[] fixedIV = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};  // 固定IV
+            Aes aes = Aes.Create();
+            aes.Key = Encoding.UTF8.GetBytes("1234567890abcdef");
+            aes.IV = fixedIV;  // 使用固定IV
+            byte[] encrypted = aes.CreateEncryptor().TransformFinalBlock(
+                Encoding.UTF8.GetBytes(data), 0, data.Length);
+        }
+
+        // [GB/T34946-6.2.6.10] 不充分的随机数 🟠 HIGH
+        public void InsufficientRandomness()
+        {
+            Random random = new Random();  // 不安全的伪随机数生成器
+            byte[] iv = new byte[16];
+            random.NextBytes(iv);  // 用于安全场景
+        }
+
+        // [GB/T34946-6.2.6.11] 安全关键的行为依赖反向域名解析 🟡 MEDIUM
+        public bool ReverseDnsTrust(string ipAddress)
+        {
+            IPHostEntry host = Dns.GetHostEntry(ipAddress);
+            return host.HostName.EndsWith("trusted.com");  // 依赖反向DNS解析进行信任判断
+        }
+
+        // [GB/T34946-6.2.6.12] 没有要求使用强口令 🟡 MEDIUM
+        public bool WeakPasswordPolicy(string password)
+        {
+            // 仅检查长度，未检查复杂度
+            return password.Length >= 4;
+        }
+
+        // [GB/T34946-6.2.6.13] 没有对口令域进行掩饰 🟢 LOW
+        public void PasswordFieldNotMasked()
+        {
+            // GUI中口令输入框未设置掩码（示例）
+            // TextBox passwordField = new TextBox();  // 应使用PasswordChar属性
+        }
+
+        // [GB/T34946-6.2.6.14] 依赖未经验证和完整性检查的Cookie 🟠 HIGH
+        public bool UnverifiedCookieAuth(HttpRequest req)
+        {
+            HttpCookie cookie = req.Cookies["isAdmin"];
+            if (cookie != null)
+            {
+                return cookie.Value == "true";  // Cookie未验证，可伪造
+            }
+            return false;
+        }
+
+        // [GB/T34946-6.2.6.15] 通过用户控制的SQL关键字绕过授权 🟠 HIGH
+        public void SqlKeywordBypass(string orderBy)
+        {
+            string sql = "SELECT * FROM products ORDER BY " + orderBy;  // ORDER BY由用户控制
+            using (SqlConnection conn = new SqlConnection("connection_string"))
+            {
+                SqlCommand cmd = new SqlCommand(sql, conn);
+                conn.Open();
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        // [GB/T34946-6.2.6.16] HTTPS会话中的敏感cookie没有设置安全属性 🟡 MEDIUM
+        public void CookieWithoutSecureAttribute(HttpResponse resp)
+        {
+            HttpCookie sessionCookie = new HttpCookie("sessionId", "abc123");
+            // 未设置Secure属性
+            resp.Cookies.Add(sessionCookie);
+        }
+
+        // [GB/T34946-6.2.6.17] 未使用盐值计算散列值 🟠 HIGH
+        public string HashWithoutSalt(string password)
+        {
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                byte[] hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(password));  // 未使用盐值
+                return Convert.ToBase64String(hash);
+            }
+        }
+
+        // [GB/T34946-6.2.6.18] RSA算法未使用最优非对称加密填充 🟠 HIGH
+        public void RsaWithoutOAEP(string data)
+        {
+            RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048);
+            byte[] encrypted = rsa.Encrypt(Encoding.UTF8.GetBytes(data), false);  // false表示使用PKCS1填充
+        }
+
+        // ========== 6.2.7 时间和方法状态 ==========
+
+        // [GB/T34946-6.2.7.1] 会话固定 🟠 HIGH
+        public void SessionFixation(HttpRequest req, HttpSessionState session)
+        {
+            string username = req["username"];
+            session["user"] = username;  // 登录前未创建新session，使用原有session ID
+        }
+
+        // [GB/T34946-6.2.7.2] 会话永不过期 🟡 MEDIUM
+        public void SessionNeverTimeout(HttpSessionState session)
+        {
+            session.Timeout = int.MaxValue;  // 设置为永不过期
+        }
+
+        // ========== 6.2.8 Web问题 ==========
+
+        // [GB/T34946-6.2.8.1] 跨站脚本（XSS） 🟠 HIGH
+        public void CrossSiteScripting(string name, HttpResponse resp)
+        {
+            resp.Write("Hello " + name);  // 直接输出，未转义
+        }
+
+        // [GB/T34946-6.2.8.2] 跨站请求伪造（CSRF） 🟠 HIGH
+        public ActionResult CsrfVulnerability(string to, decimal amount)
         {
             // 没有CSRF token验证
-            return Content("Transferred " + amount + " to " + to);
+            return new ContentResult { Content = "Transferred " + amount + " to " + to };
         }
+
+        // [GB/T34946-6.2.8.3] HTTP响应拆分 🟠 HIGH
+        public void HttpResponseSplitting(string userInput, HttpResponse resp)
+        {
+            resp.AddHeader("X-Custom", userInput);  // userInput可能包含\r\n
+        }
+
+        // [GB/T34946-6.2.8.4] 开放重定向 🟡 MEDIUM
+        public void OpenRedirect(string url, HttpResponse resp)
+        {
+            resp.Redirect(url);  // url来自用户输入，未验证
+        }
+
+        // [GB/T34946-6.2.8.5] 依赖外部提供的文件的名称或扩展名 🟠 HIGH
+        public void FileNameExtensionTrust(string filename, byte[] content)
+        {
+            if (filename.EndsWith(".jpg"))  // 仅检查扩展名，未检查文件内容
+            {
+                File.WriteAllBytes("/uploads/" + filename, content);
+            }
+        }
+
+        // ========== 6.2.9 用户界面错误 ==========
+
+        // [GB/T34946-6.2.9.1] 点击劫持 🟡 MEDIUM
+        public void Clickjacking(HttpResponse resp)
+        {
+            // 未设置X-Frame-Options头
+            resp.Write("<html><body>Sensitive content</body></html>");
+        }
+
+        // ========== 辅助方法 ==========
+
+        private void ProcessItem(int index) { }
     }
 }

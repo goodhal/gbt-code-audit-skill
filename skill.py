@@ -1,609 +1,1032 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-代码安全审计技能
+代码安全审计技能 - Markdown文件直接处理方案
 
-支持基于中国国家标准的代码安全审计，利用 Agent 的 LLM 进行智能审计。
+流程：快速扫描 → 创建md文件 → LLM审计创建md文件 → finalize_report遍历md文件去重生成报告
 """
 
 import json
+import os
 import re
 import sys
+import time
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List
+import concurrent.futures
 
-# Windows GBK 修复：强制 stdout 使用 UTF-8
-if sys.platform == 'win32':
+MAX_WORKERS = min(os.cpu_count() or 4, 8)
+
+if sys.platform == "win32":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
-PROJECT_ROOT = Path(__file__).parent
-RULES_DIR = PROJECT_ROOT / "rules"
-
-# 语言到标准的映射
-LANGUAGE_STANDARD_MAP = {
-    "java": ["34944"],
-    "cpp": ["34943"],
-    "c++": ["34943"],
-    "csharp": ["34946"],
-    "c#": ["34946"],
-    "python": ["39412"],
-    "javascript": ["39412"],
-    "typescript": ["39412"],
-    "go": ["39412"],
-}
-
-# 标准文件映射
-STANDARD_FILES = {
-    "34943": "GBT_34943-2017.md",
-    "34944": "GBT_34944-2017.md",
-    "34946": "GBT_34946-2017.md",
-    "39412": "GBT_39412-2020.md",
-}
-
-# 标准中文名
-STANDARD_NAMES = {
-    "34943": "GB/T 34943-2017 C/C++ 语言",
-    "34944": "GB/T 34944-2017 Java 语言",
-    "34946": "GB/T 34946-2017 C# 语言",
-    "39412": "GB/T 39412-2020 通用",
+LANGUAGE_EXTENSIONS = {
+    "java": [".java"],
+    "cpp": [".cpp", ".cc", ".cxx", ".c++", ".c"],
+    "csharp": [".cs"],
+    "python": [".py"],
 }
 
 
-def detect_language(target_path: str) -> Dict:
-    """检测代码目录使用的语言"""
-    target = Path(target_path)
-    if not target.exists():
-        return {"success": False, "error": f"路径不存在: {target_path}"}
-
-    language_signatures = {
-        "java": ["*.java"],
-        "cpp": ["*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp"],
-        "csharp": ["*.cs"],
-        "python": ["*.py"],
-        "javascript": ["*.js", "*.jsx"],
-        "typescript": ["*.ts", "*.tsx"],
-        "go": ["*.go"],
-    }
-
-    counts = {}
-    for lang, patterns in language_signatures.items():
-        count = 0
-        for pattern in patterns:
-            count += len(list(target.rglob(pattern)))
-        if count > 0:
-            counts[lang] = count
-
-    if not counts:
-        return {"success": False, "error": "未检测到已知语言代码"}
-
-    sorted_langs = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-    detected_languages = [lang for lang, _ in sorted_langs]
-
-    # 映射到标准
-    standards = []
-    for lang in detected_languages:
-        for std in LANGUAGE_STANDARD_MAP.get(lang, []):
-            if std not in standards:
-                standards.append(std)
-
-    # 确保包含通用基线标准 39412
-    if "39412" not in standards:
-        standards.append("39412")
-
-    return {
-        "success": True,
-        "target": str(target),
-        "languages": detected_languages,
-        "standards": standards,
-        "file_counts": counts,
-        "standard_names": [STANDARD_NAMES.get(s, s) for s in standards],
-    }
-
-
-def get_standards(languages: List[str] = None, target_path: str = None) -> Dict:
-    """获取语言对应的审计标准"""
-    if not languages and target_path:
-        lang_result = detect_language(target_path)
-        languages = lang_result.get("languages", ["java"]) if lang_result["success"] else ["java"]
-
-    if not languages:
-        languages = ["java"]
-
-    result = []
-    for lang in languages:
-        lang_lower = lang.lower()
-        for std_code in LANGUAGE_STANDARD_MAP.get(lang_lower, []):
-            rule_count = get_rule_count(std_code)
-            result.append({
-                "code": std_code,
-                "name": STANDARD_NAMES.get(std_code, std_code),
-                "language": lang,
-                "rule_count": rule_count,
-            })
-
-    # 添加通用标准
-    has_general = any(s["code"] == "39412" for s in result)
-    if not has_general:
-        result.append({
-            "code": "39412",
-            "name": "GB/T 39412-2020 通用",
-            "language": "all",
-            "rule_count": get_rule_count("39412"),
-        })
-
-    return {"success": True, "standards": result}
-
-
-def get_rule_count(standard: str) -> int:
-    """获取标准的规则数量"""
-    rules_file = RULES_DIR / STANDARD_FILES.get(standard, "")
-    if not rules_file.exists():
-        return 0
-
-    try:
-        content = rules_file.read_text(encoding="utf-8")
-        # 从文件头部读取
-        m = re.search(r"\*\*规则数量\*\*[：:]\s*(\d+)", content)
-        if m:
-            return int(m.group(1))
-        # 否则统计 ### 标题数
-        return len(re.findall(r"^### ", content, re.MULTILINE))
-    except Exception:
-        return 0
-
-
-def get_rules(standard: str = "34944") -> Dict:
-    """获取标准的完整规则"""
-    try:
-        rules = []
+def parse_finding_md(md_content: str) -> Dict:
+    """解析Markdown格式的审计发现文件
+    
+    Args:
+        md_content: Markdown文件内容
         
-        if standard in STANDARD_FILES:
-            rules_file = RULES_DIR / STANDARD_FILES[standard]
-            if rules_file.exists():
-                content = rules_file.read_text(encoding="utf-8")
-                pattern = re.compile(
-                    r"^###\s+问题分类(GB/T\d+-\d+[\d.-]*)\s+.*?\n"
-                    r"\*\*严重级别\*\*[：:]\s*(\w+)"
-                    r".*?\*\*CWE\*\*[：:]\s*\[?(CWE-\d+)\]?",
-                    re.MULTILINE | re.DOTALL,
-                )
-
-                sev_map = {
-                    "CRITICAL": "严重", "HIGH": "高危", "MEDIUM": "中危", "LOW": "低危",
-                    "严重": "严重", "高危": "高危", "中危": "中危", "低危": "低危",
-                }
-
-                for m in pattern.finditer(content):
-                    code = m.group(1)
-                    sev_raw = m.group(2).upper()
-                    cwe = m.group(3)
-                    sev = sev_map.get(sev_raw, "中危")
-
-                    title_match = re.search(rf"^###\s+问题分类{re.escape(code)}\s+(.*?)\s*$", content, re.MULTILINE)
-                    name = ""
-                    if title_match:
-                        name = re.sub(r"[🔴🟠🟡🟢🔵⚪\s]+", "", title_match.group(1)).strip()
-
-                    block_start = m.start()
-                    next_rule = re.search(r"^### ", content[m.end():], re.MULTILINE)
-                    block_end = m.end() + next_rule.start() if next_rule else len(content)
-                    
-                    rules.append({
-                        "code": code,
-                        "cwe": cwe,
-                        "name": name,
-                        "severity": sev,
-                        "description": content[block_start:block_end].strip()
-                    })
+    Returns:
+        解析后的字典数据
+    """
+    finding = {}
+    lines = md_content.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
         
-        if not rules:
-            return {
-                "success": False,
-                "error": f"标准文件不存在: {standard}",
-                "available": list(STANDARD_FILES.keys()),
+        if ':' in line:
+            key, value = line.split(':', 1)
+            key = key.strip().lower()
+            value = value.strip()
+            
+            key_mapping = {
+                '编号': 'id', 'id': 'id',
+                '严重等级': 'severity', 'severity': 'severity',
+                '漏洞类型': 'type', 'type': 'type',
+                '文件路径': 'file', 'file': 'file',
+                '行号': 'line', 'line': 'line',
+                'cwe': 'cwe',
+                '国标映射': 'gbt_mapping', 'gbt_mapping': 'gbt_mapping',
+                '来源': 'source', 'source': 'source',
+                '语言': 'language', 'language': 'language',
+                '问题代码': 'code_snippet', 'code_snippet': 'code_snippet',
+                '问题描述': 'description', 'description': 'description',
+                '修复方案': 'fix', 'fix': 'fix',
+                '验证方法': 'verification', 'verification': 'verification',
             }
+            
+            mapped_key = key_mapping.get(key, key)
+            
+            if mapped_key == 'line':
+                try:
+                    finding[mapped_key] = int(value)
+                except:
+                    finding[mapped_key] = 0
+            else:
+                finding[mapped_key] = value
+    
+    return finding
 
+
+def load_all_findings(findings_dir: str = "findings") -> List[Dict]:
+    """从 findings 目录加载所有 Markdown 文件
+    
+    Args:
+        findings_dir: findings 目录路径
+        
+    Returns:
+        所有审计发现的列表
+    """
+    findings = []
+    findings_path = Path(findings_dir)
+    
+    if not findings_path.exists():
+        return findings
+    
+    for md_file in findings_path.rglob("*.md"):
+        try:
+            content = md_file.read_text(encoding='utf-8')
+            finding = parse_finding_md(content)
+            if finding:
+                finding['_md_file'] = str(md_file)
+                findings.append(finding)
+        except Exception:
+            pass
+    
+    return findings
+
+
+def validate_code_snippet(finding: Dict) -> Dict:
+    """验证代码片段是否真实存在于源文件中
+    
+    Args:
+        finding: 审计发现
+        
+    Returns:
+        包含验证结果的字典
+    """
+    file_path = finding.get('file', '')
+    line_num = finding.get('line', 0)
+    code_snippet = finding.get('code_snippet', '')
+    
+    if not file_path or not code_snippet:
+        return {"valid": True, "reason": "skip"}
+    
+    try:
+        path = Path(file_path)
+        if not path.exists():
+            return {"valid": True, "reason": "file_not_found"}
+        
+        lines = path.read_text(encoding='utf-8').splitlines()
+        
+        if line_num <= 0 or line_num > len(lines):
+            return {"valid": False, "reason": "line_out_of_range", "actual_line_count": len(lines)}
+        
+        actual_line = lines[line_num - 1].strip()
+        
+        snippet_clean = code_snippet.strip().replace('\\n', '').replace('\\r', '')
+        snippet_clean = ' '.join(snippet_clean.split())
+        
+        actual_clean = ' '.join(actual_line.split())
+        
+        if snippet_clean in actual_clean or actual_clean in snippet_clean:
+            return {"valid": True, "reason": "matched"}
+        
+        snippet_keywords = set(re.findall(r'\b\w{3,}\b', snippet_clean.lower()))
+        actual_keywords = set(re.findall(r'\b\w{3,}\b', actual_clean.lower()))
+        
+        if snippet_keywords and actual_keywords:
+            overlap = snippet_keywords & actual_keywords
+            if len(overlap) >= min(2, len(snippet_keywords)):
+                return {"valid": True, "reason": "partial_match"}
+        
+        return {
+            "valid": False, 
+            "reason": "mismatch",
+            "expected": snippet_clean[:80],
+            "actual": actual_clean[:80]
+        }
+    except Exception as e:
+        return {"valid": True, "reason": f"error: {str(e)}"}
+
+
+def filter_hallucinated_findings(findings: List[Dict]) -> tuple:
+    """过滤掉幻觉问题，返回有效发现和幻觉列表
+    
+    Args:
+        findings: 审计发现列表
+        
+    Returns:
+        (有效发现列表, 幻觉列表)
+    """
+    valid_findings = []
+    hallucinations = []
+    
+    for finding in findings:
+        source = finding.get('source', '')
+        
+        if source == 'quick_scan':
+            valid_findings.append(finding)
+        else:
+            validation = validate_code_snippet(finding)
+            if validation['valid']:
+                valid_findings.append(finding)
+            else:
+                hallucinations.append({
+                    "file": finding.get('file', ''),
+                    "line": finding.get('line', 0),
+                    "type": finding.get('type', ''),
+                    "reason": validation['reason'],
+                    "expected_code": validation.get('expected', ''),
+                    "actual_code": validation.get('actual', ''),
+                })
+    
+    return valid_findings, hallucinations
+
+
+def deduplicate_findings(findings: List[Dict]) -> List[Dict]:
+    """内存去重：按文件 + 行号 + 类型去重，优先保留 LLM 审计结果
+    
+    Args:
+        findings: 审计发现列表
+        
+    Returns:
+        去重后的列表
+    """
+    dedup_dict = {}
+    
+    for finding in findings:
+        file_path = finding.get('file', '')
+        line_num = finding.get('line', 0)
+        vuln_type = finding.get('type', '')
+        source = finding.get('source', '')
+        
+        key = f"{file_path}:{line_num}:{vuln_type}"
+        
+        if key not in dedup_dict:
+            dedup_dict[key] = finding
+        else:
+            existing = dedup_dict[key]
+            existing_source = existing.get('source', '')
+            
+            if source == 'llm_audit' and existing_source != 'llm_audit':
+                dedup_dict[key] = finding
+    
+    return list(dedup_dict.values())
+
+
+def compute_stats(findings: List[Dict]) -> Dict:
+    """计算统计信息
+    
+    Args:
+        findings: 审计发现列表
+        
+    Returns:
+        统计信息字典
+    """
+    stats = {
+        "total_count": len(findings),
+        "severity_stats": {},
+        "source_stats": {},
+        "severity_source_stats": {},
+        "gbt_stats": {},
+        "gbt_prefix_stats": {},
+    }
+    
+    severity_order = ["严重", "高危", "中危", "低危"]
+    
+    for finding in findings:
+        severity = finding.get("severity", "中危")
+        source = finding.get("source", "unknown")
+        gbt_mapping = finding.get("gbt_mapping", "")
+        
+        stats["severity_stats"][severity] = stats["severity_stats"].get(severity, 0) + 1
+        stats["source_stats"][source] = stats["source_stats"].get(source, 0) + 1
+        
+        if severity not in stats["severity_source_stats"]:
+            stats["severity_source_stats"][severity] = {}
+        stats["severity_source_stats"][severity][source] = \
+            stats["severity_source_stats"][severity].get(source, 0) + 1
+        
+        if gbt_mapping:
+            stats["gbt_stats"][gbt_mapping] = stats["gbt_stats"].get(gbt_mapping, 0) + 1
+            
+            if gbt_mapping.startswith("GB/T34944"):
+                prefix = "GB/T34944"
+            elif gbt_mapping.startswith("GB/T34943"):
+                prefix = "GB/T34943"
+            elif gbt_mapping.startswith("GB/T34946"):
+                prefix = "GB/T34946"
+            elif gbt_mapping.startswith("GB/T39412"):
+                prefix = "GB/T39412"
+            else:
+                prefix = "OTHER"
+            
+            stats["gbt_prefix_stats"][prefix] = stats["gbt_prefix_stats"].get(prefix, 0) + 1
+    
+    return stats
+
+
+def generate_summary_tables(stats: Dict) -> str:
+    """生成汇总表格
+    
+    Args:
+        stats: 统计信息
+        
+    Returns:
+        Markdown 格式的汇总表格
+    """
+    severity_order = ["严重", "高危", "中危", "低危"]
+    severity_icons = {"严重": "🔴", "高危": "🟠", "中危": "🟡", "低危": "🟢"}
+    
+    total_count = stats["total_count"]
+    severity_stats = stats["severity_stats"]
+    source_stats = stats["source_stats"]
+    severity_source_stats = stats["severity_source_stats"]
+    gbt_stats = stats["gbt_stats"]
+    gbt_prefix_stats = stats["gbt_prefix_stats"]
+    
+    quick_scan_count = source_stats.get("quick_scan", 0)
+    llm_audit_count = source_stats.get("llm_audit", 0)
+    
+    summary_lines = []
+    summary_lines.append("## 审计汇总")
+    summary_lines.append("")
+    summary_lines.append("### 问题汇总")
+    summary_lines.append("")
+    summary_lines.append("| 严重等级 | 数量 | 快速扫描 | LLM 审计 | 说明 |")
+    summary_lines.append("|:--------:|-----:|:--------:|:-------:|------|")
+    
+    descriptions = {
+        "严重": "可直接导致系统被入侵",
+        "高危": "可导致数据泄露或权限提升",
+        "中危": "可能被利用但需要特定条件",
+        "低危": "存在安全隐患但影响较小",
+    }
+    
+    for severity in severity_order:
+        count = severity_stats.get(severity, 0)
+        qs_count = severity_source_stats.get(severity, {}).get("quick_scan", 0)
+        llm_count = severity_source_stats.get(severity, {}).get("llm_audit", 0)
+        icon = severity_icons[severity]
+        summary_lines.append(
+            f"| {icon} {severity} | {count} | {qs_count} | {llm_count} | {descriptions[severity]} |"
+        )
+    
+    summary_lines.append(
+        f"| **总计** | **{total_count}** | **{quick_scan_count}** | **{llm_audit_count}** | |"
+    )
+    summary_lines.append("")
+    summary_lines.append(
+        f"**总发现**：{total_count} 个（快速扫描发现{quick_scan_count}个，LLM审计发现{llm_audit_count}个）"
+    )
+    summary_lines.append("")
+    summary_lines.append("### 按国标分类统计")
+    summary_lines.append("")
+    summary_lines.append(
+        "> ⚠️ **注意**：以下统计仅包含能明确对应到国标规则的安全问题"
+    )
+    summary_lines.append("")
+    
+    prefix_names = {
+        "GB/T34944": "GB/T 34944-2017 Java 语言源代码漏洞测试规范",
+        "GB/T34943": "GB/T 34943-2017 C/C++ 语言源代码漏洞测试规范",
+        "GB/T34946": "GB/T 34946-2017 C# 语言源代码漏洞测试规范",
+        "GB/T39412": "GB/T 39412-2020 网络安全技术 源代码漏洞检测规则",
+    }
+    
+    for prefix, count in sorted(gbt_prefix_stats.items()):
+        title = prefix_names.get(prefix, prefix)
+        summary_lines.append(f"#### {title} - {count} 个")
+        summary_lines.append("")
+        summary_lines.append("| 规则 | 问题数 |")
+        summary_lines.append("|------|--------|")
+        
+        for rule, rule_count in sorted(gbt_stats.items()):
+            if rule.startswith(prefix):
+                summary_lines.append(f"| {rule} | {rule_count} |")
+        
+        summary_lines.append(f"| **合计** | **{count}** |")
+        summary_lines.append("")
+    
+    return "\n".join(summary_lines)
+
+
+def _format_finding_to_markdown(data: Dict, idx: int) -> str:
+    """将解析数据格式化为 Markdown 详细条目"""
+    severity_icons = {"严重": "🔴", "高危": "🟠", "中危": "🟡", "低危": "🟢"}
+    source_icons = {"llm_audit": "🤖 LLM 审计", "quick_scan": "🔧 快速扫描"}
+    
+    severity = data.get("severity", "中危")
+    icon = severity_icons.get(severity, "🟡")
+    source = data.get("source", "unknown")
+    source_label = source_icons.get(source, source)
+    
+    lines = []
+    lines.append(f"### #{idx} {icon} {data.get('type', 'UNKNOWN')}")
+    lines.append("")
+    lines.append(f"**来源**: {source_label}")
+    lines.append("")
+    lines.append(f"**文件**: {data.get('file', '')}:{data.get('line', 0)}")
+    lines.append("")
+    lines.append(f"**标准**: {data.get('gbt_mapping', 'N/A')}")
+    lines.append("")
+    lines.append(f"**CWE**: [{data.get('cwe', 'N/A')}](https://cwe.mitre.org/data/definitions/{data.get('cwe', '0').split('-')[-1]}.html)")
+    lines.append("")
+    lines.append("#### 问题描述")
+    lines.append("")
+    lines.append(data.get('description', ''))
+    lines.append("")
+    lines.append("#### 问题代码")
+    lines.append("")
+    lines.append("```")
+    lines.append(data.get('code_snippet', ''))
+    lines.append("```")
+    lines.append("")
+    lines.append("#### 修复方案")
+    lines.append("")
+    lines.append(data.get('fix', ''))
+    lines.append("")
+    lines.append("#### 验证方法")
+    lines.append("")
+    lines.append(data.get('verification', ''))
+    lines.append("")
+    
+    return "\n".join(lines)
+
+
+def finalize_report(
+    output_path: str = None,
+    summary_updates: Dict = None,
+    project_name: str = None,
+    languages: List[str] = None,
+    standards: List[str] = None,
+    audit_date: str = None,
+) -> Dict:
+    """收尾报告：从 Markdown 文件生成报告
+    
+    Args:
+        output_path: 报告输出路径（可选，默认为 audit_report.md）
+        summary_updates: 摘要更新（可选）
+        project_name: 项目名称（可选，默认从文件推断）
+        languages: 语言列表（可选，默认从文件推断）
+        standards: 标准列表（可选，默认从文件推断）
+        audit_date: 审计日期（可选，默认使用当前日期）
+    """
+    if not output_path:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_path = f"audit_report_{timestamp}.md"
+    
+    try:
+        report_path = Path(output_path)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        all_findings = load_all_findings()
+        
+        valid_findings, hallucinations = filter_hallucinated_findings(all_findings)
+        
+        if hallucinations:
+            print(json.dumps({
+                "warning": f"检测到 {len(hallucinations)} 个幻觉问题，已过滤",
+                "hallucinations": hallucinations[:10]
+            }, ensure_ascii=False, indent=2))
+        
+        if not languages:
+            lang_set = set()
+            for f in valid_findings:
+                file_path = f.get("file", "")
+                if file_path.endswith(".java"):
+                    lang_set.add("Java")
+                elif file_path.endswith(".cpp") or file_path.endswith(".cc") or file_path.endswith(".c"):
+                    lang_set.add("C/C++")
+                elif file_path.endswith(".cs"):
+                    lang_set.add("C#")
+                elif file_path.endswith(".py"):
+                    lang_set.add("Python")
+            languages = list(lang_set) if lang_set else []
+        
+        if not standards:
+            gbt_prefixes = set()
+            for f in valid_findings:
+                gbt = f.get("gbt_mapping", "")
+                if gbt:
+                    if gbt.startswith("GB/T34944"):
+                        gbt_prefixes.add("GB/T 34944-2017")
+                    elif gbt.startswith("GB/T34943"):
+                        gbt_prefixes.add("GB/T 34943-2017")
+                    elif gbt.startswith("GB/T34946"):
+                        gbt_prefixes.add("GB/T 34946-2017")
+                    elif gbt.startswith("GB/T39412"):
+                        gbt_prefixes.add("GB/T 39412-2020")
+            standards = sorted(list(gbt_prefixes))
+        
+        if not project_name:
+            if valid_findings:
+                first_file = valid_findings[0].get("file", "")
+                if first_file:
+                    project_name = Path(first_file).parent.name
+                else:
+                    project_name = "audit-project"
+            else:
+                project_name = "audit-project"
+        
+        if not audit_date:
+            audit_date = time.strftime("%Y-%m-%d")
+        
+        if not report_path.exists():
+            template_content = _generate_report_template(
+                project_name=project_name,
+                languages=languages,
+                standards=standards,
+                audit_date=audit_date,
+            )
+            report_path.write_text(template_content, encoding="utf-8")
+        
+        dedup_findings = deduplicate_findings(valid_findings)
+        stats = compute_stats(dedup_findings)
+        summary_tables = generate_summary_tables(stats)
+        
+        report_content = report_path.read_text(encoding="utf-8")
+        
+        placeholder = "<!-- DETAILED_FINDINGS_PLACEHOLDER -->"
+        if placeholder in report_content:
+            formatted_findings = []
+            for idx, f in enumerate(dedup_findings, 1):
+                formatted = _format_finding_to_markdown(f, idx)
+                formatted_findings.append(formatted)
+            merged_findings = "\n\n".join(formatted_findings)
+            report_content = report_content.replace(placeholder, merged_findings)
+        
+        summary_placeholder = "<!-- SUMMARY_TABLES_PLACEHOLDER -->"
+        if summary_placeholder in report_content:
+            report_content = report_content.replace(summary_placeholder, summary_tables)
+        else:
+            pattern = r"## 审计汇总.*?(?=\n---\n\n## 详细发现)"
+            report_content = re.sub(
+                pattern, summary_tables + "\n\n---\n\n", report_content, flags=re.DOTALL
+            )
+        
+        report_content = report_content.rstrip() + "\n"
+        report_path.write_text(report_content, encoding="utf-8")
+        
+        validation_result = validate_report(output_path)
+        
+        quick_scan_count = stats["source_stats"].get("quick_scan", 0)
+        llm_audit_count = stats["source_stats"].get("llm_audit", 0)
+        
+        if validation_result.get("success", False):
+            findings_dir = Path("findings")
+            if findings_dir.exists():
+                import shutil
+                shutil.rmtree(findings_dir)
+                findings_dir.mkdir(parents=True, exist_ok=True)
+                (findings_dir / "baseline").mkdir(exist_ok=True)
+                (findings_dir / "llm_audit").mkdir(exist_ok=True)
+        
         return {
             "success": True,
-            "standard": standard,
-            "name": STANDARD_NAMES.get(standard, standard),
-            "rule_count": len(rules),
-            "rules": rules,
+            "output_path": output_path,
+            "total_findings": stats["total_count"],
+            "dedup_count": len(dedup_findings),
+            "hallucination_count": len(hallucinations),
+            "source_stats": stats["source_stats"],
+            "severity_stats": stats["severity_stats"],
+            "severity_source_stats": stats["severity_source_stats"],
+            "gbt_stats": stats["gbt_stats"],
+            "gbt_totals": stats["gbt_prefix_stats"],
+            "validation": validation_result,
+            "findings_cleaned": validation_result.get("success", False),
+            "status": "finalized",
         }
-
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": f"报告收尾失败：{e}"}
 
 
-def get_report_template() -> Dict:
-    """返回标准的报告模板，供 LLM 生成报告时参考"""
+def _generate_report_template(project_name: str, languages: List[str], standards: List[str], audit_date: str) -> str:
+    """生成报告模板"""
+    return f"""# 代码安全审计报告
+
+## 封面
+**项目**：{project_name}
+**语言**：{', '.join(languages)}
+**适用标准**：{', '.join(standards)}
+**日期**：{audit_date}
+**审计人**：Agent
+
+---
+
+## 审计汇总
+
+<!-- SUMMARY_TABLES_PLACEHOLDER -->
+
+---
+
+## 详细发现
+
+<!-- DETAILED_FINDINGS_PLACEHOLDER -->
+"""
+
+
+def validate_report(report_path: str) -> Dict:
+    """验证报告完整性"""
     try:
-        template_file = PROJECT_ROOT / "report_template.md"
+        with open(report_path, "r", encoding="utf-8") as f:
+            content = f.read()
         
-        if not template_file.exists():
-            return {
-                "success": False, 
-                "error": "报告模板文件 report_template.md 不存在"
-            }
+        issues = []
+        warnings = []
         
-        content = template_file.read_text(encoding="utf-8")
-        return {"success": True, "template": content, "source": "report_template.md"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-def scan(target_path: str, bytecode: bool = False) -> Dict:
-    """执行工具扫描（SpotBugs 字节码扫描）"""
-    target = Path(target_path)
-    if not target.exists():
-        return {"success": False, "error": f"路径不存在: {target_path}"}
-
-    import subprocess
-    import tempfile
-    import os
-    import shutil
-    
-    scan_target_dir = None  # 临时扫描目录
-    
-    try:
-        # 检查 Java 环境
-        try:
-            java_version = subprocess.run(
-                ["java", "-version"],
-                capture_output=True,
-                text=True
-            )
-            if java_version.returncode != 0:
-                return {
-                    "success": False,
-                    "error": "Java environment not installed or configured correctly",
-                    "details": "Please install JDK 8 or higher version, and ensure java command is in system PATH"
-                }
-        except FileNotFoundError:
-            return {
-                "success": False,
-                "error": "Java command not found",
-                "details": "Please install JDK 8 or higher version, and ensure java command is in system PATH"
-            }
+        omission_phrases = [
+            "篇幅限制",
+            "仅展示前",
+            "按相同格式列出",
+            "此处省略",
+            "未完待续",
+            "部分展示",
+        ]
+        for phrase in omission_phrases:
+            if phrase in content:
+                issues.append(f"报告包含省略表述：'{phrase}'")
         
-        # 检查是否有 Java 文件需要扫描
-        java_files = list(target.rglob("*.java"))
-        if not java_files:
-            return {
-                "success": False,
-                "error": "No Java files found",
-                "details": "SpotBugs can only scan Java bytecode files, no .java files found in target directory"
-            }
+        detailed_entries = re.findall(r"### #(\d+)", content)
+        detailed_count = len(detailed_entries)
         
-        # 收集所有源文件对应的类文件路径（只扫描这些文件）
-        source_class_paths = set()
-        for java_file in java_files:
-            # 获取相对路径并转换为可能的 .class 文件路径
-            rel_path = java_file.relative_to(target)
-            # 可能的 .class 文件路径（包括内部类）
-            class_base = rel_path.with_suffix('.class')
-            source_class_paths.add(str(class_base))
-            # 内部类模式: Xxx$Inner.class
-            class_stem = rel_path.stem
-            class_parent = rel_path.parent
+        total_match = re.search(r"\*\*总发现\*\*：(\d+) 个", content)
+        total_count = int(total_match.group(1)) if total_match else None
         
-        # 检查是否有编译好的字节码文件
-        class_files = list(target.rglob("*.class"))
-        if not class_files:
-            return {
-                "success": False,
-                "error": "No compiled Java bytecode files found",
-                "details": "SpotBugs requires compiled .class files to scan, please compile Java code first"
-            }
+        if total_count and detailed_count < total_count:
+            issues.append(f"详细条目数 ({detailed_count}) < 总发现数 ({total_count})")
         
-        # 创建临时目录，只复制有对应源代码的 .class 文件
-        scan_target_dir = None
-        try:
-            import shutil
-            scan_target_dir = tempfile.mkdtemp(prefix="spotbugs_scan_")
-            copied_count = 0
-            
-            for class_file in class_files:
-                rel_class = class_file.relative_to(target)
-                rel_str = str(rel_class)
-                # 检查是否有对应的源文件（包括内部类）
-                # 内部类: Xxx$Inner.class -> Xxx.java
-                class_name = rel_class.stem
-                if '$' in class_name:
-                    class_name = class_name.split('$')[0]
-                
-                # 查找对应的 .java 文件路径
-                java_rel = rel_class.with_name(class_name + '.java')
-                java_rel_str = str(java_rel)
-                
-                # 检查是否存在对应的源文件
-                has_source = False
-                for src_path in source_class_paths:
-                    if src_path.startswith(str(rel_class.with_suffix('.class'))):
-                        has_source = True
-                        break
-                    # 检查内部类
-                    if rel_str.startswith(str(rel_class.parent / class_name)):
-                        if any(sc.startswith(str(rel_class.parent / class_name)) for sc in [str(p) for p in source_class_paths]):
-                            has_source = True
-                            break
-                
-                # 更简单的判断：检查是否有同名 .java 文件（或内部类对应的外部类）
-                if not has_source:
-                    # 检查源文件列表中是否有对应的类
-                    for java_file in java_files:
-                        java_rel = java_file.relative_to(target)
-                        java_stem = java_rel.stem
-                        if class_name == java_stem:
-                            has_source = True
-                            break
-                
-                if has_source:
-                    # 复制到临时目录，保持目录结构
-                    dest_path = Path(scan_target_dir) / rel_class
-                    dest_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(class_file, dest_path)
-                    copied_count += 1
-            
-            if copied_count == 0:
-                return {
-                    "success": False,
-                    "error": "No .class files with corresponding source code found",
-                    "details": "All .class files are from third-party libraries without source code"
-                }
-        
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to prepare scan directory: {str(e)}",
-                "details": "Error occurred while copying .class files for scanning"
-            }
-        
-        # 检查 SpotBugs JAR 文件是否存在
-        spotbugs_dir = PROJECT_ROOT / "vendor" / "spotbugs"
-        spotbugs_jar = spotbugs_dir / "spotbugs.jar"
-        if not spotbugs_jar.exists():
-            return {
-                "success": False,
-                "error": "SpotBugs JAR 文件未找到",
-                "details": f"请确保 SpotBugs JAR 文件存在于 {spotbugs_jar}"
-            }
-        
-        # 构建类路径
-        classpath = []
-        for jar_file in spotbugs_dir.glob("*.jar"):
-            classpath.append(str(jar_file))
-        classpath_str = ";".join(classpath)  # Windows 用分号分隔
-        
-        # FindSecurityBugs 插件路径
-        findsecbugs_plugin = spotbugs_dir / "findsecbugs-plugin-1.14.0.jar"
-        
-        # 执行 SpotBugs 扫描（只扫描有源代码的 .class 文件）
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # 使用正确的 SpotBugs 主类
-            spotbugs_cmd = [
-                "java",
-                "-cp", classpath_str,
-                "edu.umd.cs.findbugs.FindBugs2",
-                "-pluginList", str(findsecbugs_plugin),
-                "-xml:withMessages",
-                "-output", os.path.join(temp_dir, "spotbugs-result.xml"),
-                scan_target_dir  # 扫描临时目录
-            ]
-            
-            # 执行扫描，不设置工作目录，使用绝对路径
-            scan_result = subprocess.run(
-                spotbugs_cmd,
-                capture_output=True,
-                text=True
-            )
-            
-            # 读取扫描结果
-            result_file = os.path.join(temp_dir, "spotbugs-result.xml")
-            if os.path.exists(result_file):
-                try:
-                    import xml.etree.ElementTree as ET
-                    tree = ET.parse(result_file)
-                    root = tree.getroot()
-                    
-                    # 解析 XML 结果（不需要再过滤，因为只扫描了有源代码的文件）
-                    findings = []
-                    for bug_instance in root.findall(".//BugInstance"):
-                        bug_type = bug_instance.get("type")
-                        cwe = bug_instance.get("cweId")
-                        
-                        # 查找源文件和行号
-                        source_line = bug_instance.find(".//SourceLine")
-                        if source_line is not None:
-                            file_name = source_line.get("sourcepath") or source_line.get("classname")
-                            line_number = source_line.get("start")
-                            
-                            findings.append({
-                                "type": bug_type,
-                                "file": file_name,
-                                "line": int(line_number) if line_number else 0,
-                                "cwe": f"CWE-{cwe}" if cwe else "Unknown"
-                            })
-                    
-                    result_data = {
-                        "success": True,
-                        "target": str(target),
-                        "bytecode": bytecode,
-                        "findings": findings,
-                        "summary": {
-                            "total": len(findings),
-                            "java": len(findings),
-                            "cpp": 0,
-                            "csharp": 0,
-                            "python": 0
-                        },
-                        "scanned_classes": copied_count,  # 实际扫描的 .class 文件数
-                        "total_classes": len(class_files),  # 总 .class 文件数
-                        "scan_output": scan_result.stdout,
-                        "scan_error": scan_result.stderr
-                    }
-                    
-                    json_output_path = PROJECT_ROOT / "spotbugs_result.json"
-                    with open(json_output_path, "w", encoding="utf-8") as f:
-                        json.dump(result_data, f, ensure_ascii=False, indent=2)
-                    
-                    return result_data
-                except ET.ParseError as e:
-                    return {
-                        "success": False,
-                        "error": f"扫描结果解析失败: {str(e)}",
-                        "details": "SpotBugs 扫描完成，但生成的扫描结果文件格式不正确",
-                        "scan_output": scan_result.stdout,
-                        "scan_error": scan_result.stderr
-                    }
-            else:
-                return {
-                    "success": False,
-                    "error": "SpotBugs 扫描失败",
-                    "details": f"扫描命令执行失败: {scan_result.stderr}"
-                }
-    except Exception as e:
         return {
-            "success": False,
-            "error": f"扫描过程中发生错误: {str(e)}",
-            "details": "请检查 Java 环境和 SpotBugs 配置"
+            "success": len(issues) == 0,
+            "detailed_count": detailed_count,
+            "total_count": total_count,
+            "issues": issues,
+            "warnings": warnings,
         }
-    finally:
-        # 清理临时扫描目录
-        if scan_target_dir and Path(scan_target_dir).exists():
-            try:
-                shutil.rmtree(scan_target_dir)
-            except Exception:
-                pass
+    except Exception as e:
+        return {"success": False, "error": f"验证失败：{e}"}
 
-def audit_code(target_path: str, languages: List[str] = None, standards: List[str] = None) -> Dict:
-    """使用 LLM 对代码进行安全审计"""
+
+def quick_scan_patterns() -> Dict[str, List[tuple]]:
+    """返回预编译的正则模式"""
+    return _COMPILED_PATTERNS
+
+
+def quick_scan_file(file_path: str, language: str) -> List[Dict]:
+    """快速扫描单个文件"""
+    findings = []
+    path = Path(file_path)
+    
+    if not path.exists():
+        return findings
+    
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        patterns = _COMPILED_PATTERNS.get(language, [])
+        
+        for line_num, line in enumerate(lines, 1):
+            line_stripped = line.strip()
+            for pattern, vuln_type, cwe, severity in patterns:
+                if pattern.search(line):
+                    findings.append({
+                        "file": str(path),
+                        "line": line_num,
+                        "type": vuln_type,
+                        "cwe": cwe,
+                        "severity": severity,
+                        "source": "quick_scan",
+                        "language": language,
+                        "code_snippet": line_stripped if line_stripped else "",
+                    })
+                    break
+    except Exception:
+        pass
+    
+    return findings
+
+
+def parallel_quick_scan(file_paths: List[str], languages: Dict[str, str], max_workers: int = MAX_WORKERS) -> List[Dict]:
+    """并行扫描多个文件"""
+    if not file_paths:
+        return []
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = executor.map(
+            lambda fp: quick_scan_file(fp, languages.get(fp, "java")), file_paths
+        )
+    return [finding for result in results for finding in result]
+
+
+def quick_scan(target_path: str, max_workers: int = MAX_WORKERS) -> Dict:
+    """快速扫描：使用正则模式匹配检测常见漏洞"""
     target = Path(target_path)
     if not target.exists():
-        return {"success": False, "error": f"路径不存在: {target_path}"}
+        return {"success": False, "error": f"路径不存在：{target_path}"}
     
-    # 如果未指定语言，自动检测
-    if not languages:
-        lang_result = detect_language(target_path)
-        if not lang_result["success"]:
-            return lang_result
-        languages = lang_result["languages"]
-    
-    # 如果未指定标准，根据语言自动选择
-    if not standards:
-        std_result = get_standards(languages=languages)
-        if not std_result["success"]:
-            return std_result
-        standards = [std["code"] for std in std_result["standards"]]
-    
-    # 收集代码文件
     code_files = []
-    language_extensions = {
-        "java": [".java"],
-        "cpp": [".cpp", ".cc", ".cxx", ".h", ".hpp"],
-        "csharp": [".cs"],
-        "python": [".py"],
-        "javascript": [".js", ".jsx"],
-        "typescript": [".ts", ".tsx"],
-        "go": [".go"],
-    }
+    file_lang_map = {}
+    languages = []
     
-    for lang in languages:
-        extensions = language_extensions.get(lang, [])
+    for lang, extensions in LANGUAGE_EXTENSIONS.items():
         for ext in extensions:
-            code_files.extend(list(target.rglob(f"*{ext}")))
+            files = list(target.rglob(f"*{ext}"))
+            if files:
+                if lang not in languages:
+                    languages.append(lang)
+                for fp in files:
+                    code_files.append(str(fp))
+                    file_lang_map[str(fp)] = lang
     
     if not code_files:
         return {"success": False, "error": "未找到代码文件"}
     
-    rules_info = []
-    for std in standards:
-        std_rules = get_rules(standard=std)
-        if std_rules["success"]:
-            rules_info.append({
-                "standard": std,
-                "name": std_rules["name"],
-                "rules": std_rules["rules"]
-            })
+    findings = parallel_quick_scan(code_files, file_lang_map, max_workers)
     
     return {
         "success": True,
         "target": str(target),
         "languages": languages,
-        "standards": standards,
-        "code_files": [str(f) for f in code_files[:50]],
-        "file_count": len(code_files),
-        "rules_info": rules_info,
-        "message": "代码审计信息已准备就绪，请参考 SKILL.md 进行智能审计"
+        "findings": findings,
+        "total_findings": len(findings),
     }
 
 
+_COMPILED_PATTERNS: Dict[str, List[tuple]] = {}
+
+
+def _init_compiled_patterns():
+    """模块加载时预编译所有正则表达式"""
+    pattern_strings = {
+        "java": [
+            (r"Runtime\.getRuntime\(\)\.exec\s*\(", "COMMAND_INJECTION", "CWE-78", "严重"),
+            (r'String\s+sql\s*=\s*["\'].*?\+.*?["\']', "SQL_INJECTION", "CWE-89", "严重"),
+            (r'password\s*=\s*"[^"]{3,}"', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
+            (r'(?:private\s+)?(?:static\s+)?(?:final\s+)?String\s+\w*(?:PASSWORD|PASS|SECRET|KEY|TOKEN)\s*=\s*"[^"]{3,}"', "HARD_CODE_SECRET", "CWE-321", "严重"),
+            (r'new\s+File\s*\(\s*[^"]*\s*\+\s*', "PATH_TRAVERSAL", "CWE-22", "高危"),
+            (r"eval\s*\(", "CODE_INJECTION", "CWE-94", "严重"),
+            (r"Statement\.execute", "SQL_INJECTION", "CWE-89", "严重"),
+            (r'MessageDigest\.getInstance\s*\(\s*["\']MD5["\']', "WEAK_HASH", "CWE-328", "高危"),
+            (r'MessageDigest\.getInstance\s*\(\s*["\']SHA-?1["\']', "WEAK_HASH", "CWE-328", "高危"),
+            (r'Cipher\.getInstance\s*\(\s*["\']DES["\']', "WEAK_CRYPTO", "CWE-327", "高危"),
+            (r"new\s+Random\s*\(\s*\)", "PREDICTABLE_RANDOM", "CWE-338", "高危"),
+        ],
+        "cpp": [
+            (r'system\s*\(\s*[^"]*\s*\+', "COMMAND_INJECTION", "CWE-78", "严重"),
+            (r'sprintf\s*\(\s*\w+\s*,\s*[^"]*\s*\+', "BUFFER_OVERFLOW", "CWE-120", "严重"),
+            (r"strcpy\s*\(", "BUFFER_OVERFLOW", "CWE-120", "严重"),
+            (r"gets\s*\(", "BUFFER_OVERFLOW", "CWE-120", "严重"),
+            (r"printf\s*\(\s*\w+\s*\)", "FORMAT_STRING", "CWE-134", "高危"),
+            (r"malloc\s*\(\s*\w+\s*\*\s*\d+\s*\)", "INTEGER_OVERFLOW", "CWE-190", "高危"),
+            (r'password\s*=\s*"[^"]{3,}"', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
+        ],
+        "csharp": [
+            (r'Process\.Start\s*\(\s*[^"]*\s*\+', "COMMAND_INJECTION", "CWE-78", "严重"),
+            (r'String\s+sql\s*=\s*["\'].*?\+.*?["\']', "SQL_INJECTION", "CWE-89", "严重"),
+            (r'password\s*=\s*"[^"]{3,}"', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
+            (r'File\.ReadAllText\s*\(\s*[^"]*\s*\+\s*', "PATH_TRAVERSAL", "CWE-22", "高危"),
+            (r"eval\s*\(", "CODE_INJECTION", "CWE-94", "严重"),
+            (r"SHA1\.Create", "WEAK_HASH", "CWE-328", "高危"),
+            (r"DES\.Create", "WEAK_CRYPTO", "CWE-327", "高危"),
+        ],
+        "python": [
+            (r'os\.system\s*\(\s*[^"]*\s*\+', "COMMAND_INJECTION", "CWE-78", "严重"),
+            (r"subprocess\.(?:call|run|Popen)\s*\([^)]*shell\s*=\s*True", "COMMAND_INJECTION", "CWE-78", "严重"),
+            (r"exec\s*\(", "CODE_INJECTION", "CWE-95", "严重"),
+            (r"eval\s*\(", "CODE_INJECTION", "CWE-95", "严重"),
+            (r"pickle\.loads?\s*\(", "DESERIALIZATION", "CWE-502", "严重"),
+            (r'password\s*=\s*["\'][^"\']{3,}["\']', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
+            (r'(?:API_KEY|SECRET_KEY|TOKEN)\s*=\s*["\'][^"\']{3,}["\']', "HARD_CODE_SECRET", "CWE-321", "严重"),
+            (r"hashlib\.md5", "WEAK_HASH", "CWE-328", "高危"),
+            (r"random\.random", "PREDICTABLE_RANDOM", "CWE-338", "高危"),
+        ],
+    }
+    for lang, patterns in pattern_strings.items():
+        _COMPILED_PATTERNS[lang] = [
+            (re.compile(pattern, re.IGNORECASE), vuln_type, cwe, severity)
+            for pattern, vuln_type, cwe, severity in patterns
+        ]
+
+
+_init_compiled_patterns()
+
+
 def main():
-    """技能主入口"""
     if len(sys.argv) < 2:
-        print(json.dumps({
-            "success": False,
-            "error": "缺少命令参数",
-            "usage": "python skill.py <command> [args]"
-        }, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "success": False,
+                    "error": "缺少命令参数",
+                    "usage": "python skill.py <command> [args]",
+                    "commands": [
+                        "quick_scan <target_path>",
+                        "extract_code <file_path> <line_number> [--context=3]",
+                        "validate_finding <md_file_path>",
+                        "finalize_report [--output=报告路径] [--project=名称] [--languages=列表] [--standards=列表] [--date=日期]",
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
         return
     
     command = sys.argv[1]
     
-    if command == "detect_language":
+    if command == "quick_scan":
         if len(sys.argv) < 3:
             print(json.dumps({"success": False, "error": "缺少 target 参数"}, ensure_ascii=False))
             return
-        result = detect_language(sys.argv[2])
+        result = quick_scan(target_path=sys.argv[2])
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     
-    elif command == "get_standards":
-        languages = None
-        target = None
-        if len(sys.argv) > 2:
-            if sys.argv[2].startswith("--languages="):
-                languages = sys.argv[2].split("=")[1].split(",")
-            elif sys.argv[2].startswith("--target="):
-                target = sys.argv[2].split("=")[1]
-        result = get_standards(languages=languages, target_path=target)
-    
-    elif command == "get_rules":
-        standard = sys.argv[2] if len(sys.argv) > 2 else "34944"
-        result = get_rules(standard=standard)
-    
-    elif command == "scan":
-        if len(sys.argv) < 3:
-            print(json.dumps({"success": False, "error": "缺少 target 参数"}, ensure_ascii=False))
-            return
-        target = sys.argv[2]
-        bytecode = False
-        if len(sys.argv) > 3 and sys.argv[3] == "--bytecode":
-            bytecode = True
-        result = scan(target_path=target, bytecode=bytecode)
-    
-    elif command == "get_report_template":
-        result = get_report_template()
-    
-    elif command == "audit_code":
-        if len(sys.argv) < 3:
-            print(json.dumps({"success": False, "error": "缺少 target 参数"}, ensure_ascii=False))
-            return
-        target = sys.argv[2]
+    elif command == "finalize_report":
+        output_path = None
+        summary_updates = None
+        project_name = None
         languages = None
         standards = None
-        if len(sys.argv) > 3:
-            for arg in sys.argv[3:]:
-                if arg.startswith("--languages="):
-                    languages = arg.split("=")[1].split(",")
-                elif arg.startswith("--standards="):
-                    standards = arg.split("=")[1].split(",")
-        result = audit_code(target_path=target, languages=languages, standards=standards)
+        audit_date = None
+        
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            
+            if arg in ("--output", "-o"):
+                if i + 1 < len(args):
+                    output_path = args[i + 1]
+                    i += 2
+                    continue
+            elif arg.startswith("--output="):
+                output_path = arg.split("=", 1)[1]
+            
+            elif arg in ("--project", "--project_name", "-p"):
+                if i + 1 < len(args):
+                    project_name = args[i + 1]
+                    i += 2
+                    continue
+            elif arg.startswith("--project=") or arg.startswith("--project_name="):
+                project_name = arg.split("=", 1)[1]
+            
+            elif arg in ("--languages", "-l"):
+                if i + 1 < len(args):
+                    languages = args[i + 1].split(",")
+                    i += 2
+                    continue
+            elif arg.startswith("--languages="):
+                languages = arg.split("=", 1)[1].split(",")
+            
+            elif arg in ("--standards", "-s"):
+                if i + 1 < len(args):
+                    standards = args[i + 1].split(",")
+                    i += 2
+                    continue
+            elif arg.startswith("--standards="):
+                standards = arg.split("=", 1)[1].split(",")
+            
+            elif arg in ("--date", "--audit_date", "-d"):
+                if i + 1 < len(args):
+                    audit_date = args[i + 1]
+                    i += 2
+                    continue
+            elif arg.startswith("--date=") or arg.startswith("--audit_date="):
+                audit_date = arg.split("=", 1)[1]
+            
+            elif arg.endswith(".json"):
+                try:
+                    summary_updates = json.loads(Path(arg).read_text(encoding="utf-8"))
+                except:
+                    pass
+            
+            elif not arg.startswith("-"):
+                output_path = arg
+            
+            i += 1
+        
+        result = finalize_report(
+            output_path,
+            summary_updates,
+            project_name,
+            languages,
+            standards,
+            audit_date,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    
+    elif command == "extract_code":
+        if len(sys.argv) < 4:
+            print(json.dumps({
+                "success": False, 
+                "error": "缺少参数",
+                "usage": "python skill.py extract_code <file_path> <line_number> [--context=3]"
+            }, ensure_ascii=False))
+            return
+        
+        file_path = sys.argv[2]
+        try:
+            line_num = int(sys.argv[3])
+        except ValueError:
+            print(json.dumps({"success": False, "error": "行号必须是整数"}, ensure_ascii=False))
+            return
+        
+        context = 3
+        for arg in sys.argv[4:]:
+            if arg.startswith("--context="):
+                context = int(arg.split("=", 1)[1])
+        
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                print(json.dumps({"success": False, "error": f"文件不存在：{file_path}"}, ensure_ascii=False))
+                return
+            
+            lines = path.read_text(encoding='utf-8').splitlines()
+            
+            if line_num <= 0 or line_num > len(lines):
+                print(json.dumps({
+                    "success": False, 
+                    "error": f"行号超出范围，文件共 {len(lines)} 行"
+                }, ensure_ascii=False))
+                return
+            
+            start = max(1, line_num - context)
+            end = min(len(lines), line_num + context)
+            
+            result_lines = []
+            for i in range(start, end + 1):
+                prefix = ">>> " if i == line_num else "    "
+                result_lines.append(f"{prefix}{i}: {lines[i-1]}")
+            
+            print(json.dumps({
+                "success": True,
+                "file": file_path,
+                "line": line_num,
+                "code_snippet": lines[line_num - 1].strip(),
+                "context": "\n".join(result_lines),
+                "total_lines": len(lines)
+            }, ensure_ascii=False, indent=2))
+        except Exception as e:
+            print(json.dumps({"success": False, "error": f"读取文件失败：{e}"}, ensure_ascii=False))
+    
+    elif command == "validate_finding":
+        if len(sys.argv) < 3:
+            print(json.dumps({
+                "success": False,
+                "error": "缺少参数",
+                "usage": "python skill.py validate_finding <md_file_path>",
+                "example": "python skill.py validate_finding findings/llm_audit/001.md",
+                "workflow": [
+                    "1. LLM创建md文件",
+                    "2. 调用 validate_finding 验证",
+                    "3. 验证失败 → 用下一个问题覆盖当前md → 再次验证",
+                    "4. 验证成功 → 编号+1，开始下一个md文件"
+                ]
+            }, ensure_ascii=False, indent=2))
+            return
+        
+        md_path = Path(sys.argv[2])
+        
+        if not md_path.exists():
+            print(json.dumps({"success": False, "error": f"文件不存在：{md_path}"}, ensure_ascii=False))
+            return
+        
+        try:
+            content = md_path.read_text(encoding='utf-8')
+        except Exception as e:
+            print(json.dumps({"success": False, "error": f"读取文件失败：{e}"}, ensure_ascii=False))
+            return
+        
+        finding_data = {}
+        for line in content.split('\n'):
+            if ':' in line:
+                key, _, value = line.partition(':')
+                key = key.strip()
+                value = value.strip()
+                if key == '编号':
+                    finding_data['id'] = value
+                elif key == '严重等级':
+                    finding_data['severity'] = value
+                elif key == '漏洞类型':
+                    finding_data['type'] = value
+                elif key == '文件路径':
+                    finding_data['file'] = value
+                elif key == '行号':
+                    try:
+                        finding_data['line'] = int(value)
+                    except:
+                        finding_data['line'] = 0
+                elif key == 'CWE':
+                    finding_data['cwe'] = value
+                elif key == '国标映射':
+                    finding_data['gbt_mapping'] = value
+                elif key == '来源':
+                    finding_data['source'] = value
+                elif key == '语言':
+                    finding_data['language'] = value
+                elif key == '问题代码':
+                    finding_data['code_snippet'] = value
+                elif key == '问题描述':
+                    finding_data['description'] = value
+                elif key == '修复方案':
+                    finding_data['fix'] = value
+                elif key == '验证方法':
+                    finding_data['verification'] = value
+        
+        required_fields = ['file', 'line', 'code_snippet', 'type', 'severity', 'source']
+        missing = [f for f in required_fields if not finding_data.get(f)]
+        if missing:
+            print(json.dumps({
+                "success": False,
+                "error": f"md文件缺少必填字段：{missing}",
+                "hint": "请确保md文件包含：文件路径、行号、问题代码、漏洞类型、严重等级、来源"
+            }, ensure_ascii=False, indent=2))
+            return
+        
+        source = finding_data.get('source', 'llm_audit')
+        if source not in ['quick_scan', 'llm_audit']:
+            source = 'llm_audit'
+        
+        validation = validate_code_snippet(finding_data)
+        
+        if not validation['valid']:
+            print(json.dumps({
+                "success": False,
+                "error": "代码片段验证失败，可能存在幻觉",
+                "reason": validation['reason'],
+                "md_file": str(md_path),
+                "source_file": finding_data.get('file'),
+                "line": finding_data.get('line'),
+                "expected_code": validation.get('expected', ''),
+                "actual_code": validation.get('actual', ''),
+                "hint": "用下一个问题覆盖当前md文件内容后再次验证",
+                "action": "覆盖当前md → 再次调用 validate_finding"
+            }, ensure_ascii=False, indent=2))
+            return
+        
+        print(json.dumps({
+            "success": True,
+            "md_file": str(md_path),
+            "finding_id": finding_data.get('id'),
+            "validation": validation['reason'],
+            "message": "验证通过，可以开始下一个发现"
+        }, ensure_ascii=False, indent=2))
     
     else:
-        result = {"success": False, "error": f"未知命令: {command}"}
-    
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps({"success": False, "error": f"未知命令：{command}"}, ensure_ascii=False))
 
 
 if __name__ == "__main__":
