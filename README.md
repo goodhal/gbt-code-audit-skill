@@ -356,4 +356,6 @@ MIT License
 - 📧 邮箱：goodhal@163.com
 - 💬 微信：扫码添加
 
-![微信二维码](image.png)
+<div align="center">
+  <img src="image.png" alt="微信二维码" width="200" />
+</div>
