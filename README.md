@@ -7,10 +7,11 @@
 ## 功能特性
 
 - **多语言支持**: C/C++、Java、C#、Python 等
-- **国标覆盖**: GB/T 34943-2017 (C/C++)、GB/T 34944-2017 (Java)、GB/T 34946-2017 (C#)、GB/T 39412-2020 (通用)
-- **快速扫描**: 正则表达式模式匹配，快速发现高危漏洞
-- **LLM 智能审计**: 利用 Agent 的 LLM 能力进行深度语义分析
-- **内存去重**: 同文件同方法同类问题自动合并，优先保留 LLM 审计结果
+- **国标覆盖**: GB/T 34943-2017 (C/C++)、GB/T 34944-2017 (Java)、GB/T 34946-2017 (C#)、GB/T 39412-2020 (通用)，合计 210 条规则
+- **双层审计架构**: 规则引擎快速扫描 + LLM 深度语义分析
+- **智能防幻觉**: 两级自动验证机制（创建时 + 报告前）
+- **修复方案质量验证**: 自动检测修复方案可执行性，过滤模糊表述
+- **多维去重**: 基于文件路径、行号、漏洞类型的智能去重，优先保留 LLM 审计结果
 - **标准报告**: 按国标章节分类，生成合规审计报告
 - **时间戳命名**: 报告文件自动添加时间戳，便于追溯和管理
 - **无需 API Key**: 直接利用 Agent 的内置 LLM 能力
@@ -186,15 +187,18 @@ gbt-code-audit-skill/
 │   ├── GBT_34944-2017.md  # Java 规则（37 条）
 │   ├── GBT_34946-2017.md  # C# 规则（42 条）
 │   └── GBT_39412-2020.md  # 通用规则（97 条）
-└── test-samples/          # 测试样例
-    ├── cpp/
-    │   └── vulnerable_cpp.cpp
-    ├── csharp/
-    │   └── vulnerable_csharp.cs
-    ├── java/
-    │   └── VulnerableJava.java
-    └── python/
-        └── vulnerable_python.py
+├── test-samples/          # 测试样例
+│   ├── cpp/
+│   │   └── vulnerable_cpp.cpp
+│   ├── csharp/
+│   │   └── vulnerable_csharp.cs
+│   ├── java/
+│   │   └── VulnerableJava.java
+│   └── python/
+│       └── vulnerable_python.py
+└── findings/              # 审计中间结果（自动生成）
+    ├── baseline/          # 快速扫描结果
+    └── llm_audit/         # LLM 审计结果
 ```
 
 ## 审计流程
@@ -210,8 +214,10 @@ gbt-code-audit-skill/
 │  4️⃣ 快速扫描  ◀ 【必须调用 quick_scan】获取基线结果                  │
 │  5️⃣ 基线入库  ◀ 【必须】为每个发现创建 md 文件到 findings/baseline/  │
 │  6️⃣ LLM 深度审计  ◀ 【必须】为每个发现创建 md 文件到 findings/llm_audit/ │
-│  7️⃣ 生成报告  ◀ 【必须调用 finalize_report】去重 + 生成报告 + 清空目录 │
-│  8️⃣ 审计完成  ◀ 【输出】报告路径和验证结果                          │
+│  7️⃣ 防幻觉验证  ◀ 【自动】验证文件存在性、行号有效性、代码片段匹配    │
+│  8️⃣ 去重优化  ◀ 【自动】多维键去重，优先保留 LLM 结果                │
+│  9️⃣ 生成报告  ◀ 【必须调用 finalize_report】生成报告 + 清空目录       │
+│  🔟 审计完成  ◀ 【输出】报告路径和验证结果                          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -220,7 +226,9 @@ gbt-code-audit-skill/
 | 工具名称 | 描述 | 命令行用法 |
 |---------|------|----------|
 | `quick_scan` | 快速扫描：正则表达式模式匹配检测常见漏洞 | `python skill.py quick_scan <target>` |
-| `finalize_report` | 收尾报告：遍历 md 文件去重 + 生成报告 + 清空目录 | `python skill.py finalize_report [--output=报告路径] [--project=名称] [--languages=列表] [--standards=列表] [--date=日期]` |
+| `extract_code` | 提取代码：获取指定文件和行号的真实代码片段 | `python skill.py extract_code <file_path> <line_number> [--context=3]` |
+| `validate_finding` | 验证发现：验证 md 文件的代码片段是否真实存在（防幻觉） | `python skill.py validate_finding <md_file_path>` |
+| `finalize_report` | 收尾报告：遍历 md 文件去重 + 验证幻觉 + 生成报告 + 清空目录 | `python skill.py finalize_report [--output=报告路径] [--project=名称] [--languages=列表] [--standards=列表] [--date=日期]` |
 
 ### 参数说明
 

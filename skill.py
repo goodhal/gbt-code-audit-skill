@@ -47,36 +47,40 @@ def parse_finding_md(md_content: str) -> Dict:
         if not line or line.startswith('#'):
             continue
         
-        if ':' in line:
-            key, value = line.split(':', 1)
+        # 同时支持英文冒号 : (0x3a) 和中文冒号：(0xff1a)
+        if ':' in line or '\uff1a' in line:
+            sep = ':' if ':' in line else '\uff1a'
+            key, value = line.split(sep, 1)
             key = key.strip().lower()
             value = value.strip()
-            
-            key_mapping = {
-                '编号': 'id', 'id': 'id',
-                '严重等级': 'severity', 'severity': 'severity',
-                '漏洞类型': 'type', 'type': 'type',
-                '文件路径': 'file', 'file': 'file',
-                '行号': 'line', 'line': 'line',
-                'cwe': 'cwe',
-                '国标映射': 'gbt_mapping', 'gbt_mapping': 'gbt_mapping',
-                '来源': 'source', 'source': 'source',
-                '语言': 'language', 'language': 'language',
-                '问题代码': 'code_snippet', 'code_snippet': 'code_snippet',
-                '问题描述': 'description', 'description': 'description',
-                '修复方案': 'fix', 'fix': 'fix',
-                '验证方法': 'verification', 'verification': 'verification',
-            }
-            
-            mapped_key = key_mapping.get(key, key)
-            
-            if mapped_key == 'line':
-                try:
-                    finding[mapped_key] = int(value)
-                except:
-                    finding[mapped_key] = 0
-            else:
-                finding[mapped_key] = value
+        else:
+            continue
+        
+        key_mapping = {
+            '编号': 'id', 'id': 'id',
+            '严重等级': 'severity', 'severity': 'severity',
+            '漏洞类型': 'type', 'type': 'type',
+            '文件路径': 'file', 'file': 'file',
+            '行号': 'line', 'line': 'line',
+            'cwe': 'cwe',
+            '国标映射': 'gbt_mapping', 'gbt_mapping': 'gbt_mapping',
+            '来源': 'source', 'source': 'source',
+            '语言': 'language', 'language': 'language',
+            '问题代码': 'code_snippet', 'code_snippet': 'code_snippet',
+            '问题描述': 'description', 'description': 'description',
+            '修复方案': 'fix', 'fix': 'fix',
+            '验证方法': 'verification', 'verification': 'verification',
+        }
+        
+        mapped_key = key_mapping.get(key, key)
+        
+        if mapped_key == 'line':
+            try:
+                finding[mapped_key] = int(value)
+            except:
+                finding[mapped_key] = 0
+        else:
+            finding[mapped_key] = value
     
     return finding
 
@@ -380,6 +384,8 @@ def _format_finding_to_markdown(data: Dict, idx: int) -> str:
     lines.append("")
     lines.append(f"**来源**: {source_label}")
     lines.append("")
+    lines.append(f"**严重性**: {severity}")
+    lines.append("")
     lines.append(f"**文件**: {data.get('file', '')}:{data.get('line', 0)}")
     lines.append("")
     lines.append(f"**标准**: {data.get('gbt_mapping', 'N/A')}")
@@ -626,6 +632,108 @@ def quick_scan_patterns() -> Dict[str, List[tuple]]:
     return _COMPILED_PATTERNS
 
 
+def get_gbt_mapping(vuln_type: str, language: str) -> str:
+    """根据漏洞类型和语言返回国标映射
+    
+    Args:
+        vuln_type: 漏洞类型（英文）
+        language: 编程语言（java/cpp/csharp/python）
+        
+    Returns:
+        国标映射字符串（专用标准 + 通用基线）
+    """
+    # 漏洞类型到国标规则的映射
+    vuln_to_gbt = {
+        "COMMAND_INJECTION": {
+            "java": "GB/T34944-6.2.3.3 命令注入; GB/T39412-6.1.1.6 命令行注入",
+            "cpp": "GB/T34943-6.2.3.3 命令注入; GB/T39412-6.1.1.6 命令行注入",
+            "csharp": "GB/T34946-6.2.3.3 命令注入; GB/T39412-6.1.1.6 命令行注入",
+            "python": "GB/T39412-6.1.1.6 命令行注入",
+        },
+        "SQL_INJECTION": {
+            "java": "GB/T34944-6.2.3.4 SQL 注入; GB/T39412-8.3.2 SQL 注入",
+            "cpp": "GB/T34943-6.2.3.4 SQL 注入; GB/T39412-8.3.2 SQL 注入",
+            "csharp": "GB/T34946-6.2.3.4 SQL 注入; GB/T39412-8.3.2 SQL 注入",
+            "python": "GB/T39412-8.3.2 SQL 注入",
+        },
+        "CODE_INJECTION": {
+            "java": "GB/T34944-6.2.3.5 代码注入; GB/T39412-7.3.6 暴露危险的方法或函数",
+            "cpp": "GB/T39412-7.3.6 暴露危险的方法或函数",
+            "csharp": "GB/T34946-6.2.3.5 代码注入; GB/T39412-7.3.6 暴露危险的方法或函数",
+            "python": "GB/T39412-7.3.6 暴露危险的方法或函数",
+        },
+        "PATH_TRAVERSAL": {
+            "java": "GB/T34944-6.2.3.1 相对路径遍历; GB/T39412-6.1.1.14 边界值检查缺失",
+            "cpp": "GB/T34943-6.2.3.1 相对路径遍历; GB/T39412-6.1.1.14 边界值检查缺失",
+            "csharp": "GB/T34946-6.2.3.1 相对路径遍历; GB/T39412-6.1.1.14 边界值检查缺失",
+            "python": "GB/T39412-6.1.1.14 边界值检查缺失",
+        },
+        "HARD_CODE_PASSWORD": {
+            "java": "GB/T34944-6.2.6.3 口令硬编码; GB/T39412-6.2.1.3 使用安全相关的硬编码",
+            "cpp": "GB/T34943-6.2.7.3 口令硬编码; GB/T39412-6.2.1.3 使用安全相关的硬编码",
+            "csharp": "GB/T34946-6.2.6.3 口令硬编码; GB/T39412-6.2.1.3 使用安全相关的硬编码",
+            "python": "GB/T39412-6.2.1.3 使用安全相关的硬编码",
+        },
+        "HARD_CODE_SECRET": {
+            "java": "GB/T34944-6.2.6.3 口令硬编码; GB/T39412-6.2.1.3 使用安全相关的硬编码",
+            "cpp": "GB/T34943-6.2.7.3 口令硬编码; GB/T39412-6.2.1.3 使用安全相关的硬编码",
+            "csharp": "GB/T34946-6.2.6.3 口令硬编码; GB/T39412-6.2.1.3 使用安全相关的硬编码",
+            "python": "GB/T39412-6.2.1.3 使用安全相关的硬编码",
+        },
+        "WEAK_HASH": {
+            "java": "GB/T34944-6.2.6.8 可逆的散列算法; GB/T39412-6.2.1.1 密码安全不符合国密管理规定",
+            "cpp": "GB/T34943-6.2.7.6 可逆的散列算法; GB/T39412-6.2.1.1 密码安全不符合国密管理规定",
+            "csharp": "GB/T34946-6.2.6.8 可逆的散列算法; GB/T39412-6.2.1.1 密码安全不符合国密管理规定",
+            "python": "GB/T39412-6.2.1.1 密码安全不符合国密管理规定",
+        },
+        "WEAK_CRYPTO": {
+            "java": "GB/T34944-6.2.6.7 使用已破解或危险的加密算法; GB/T39412-6.2.1.1 密码安全不符合国密管理规定",
+            "cpp": "GB/T34943-6.2.7.5 使用已破解或危险的加密算法; GB/T39412-6.2.1.1 密码安全不符合国密管理规定",
+            "csharp": "GB/T34946-6.2.6.7 使用已破解或危险的加密算法; GB/T39412-6.2.1.1 密码安全不符合国密管理规定",
+            "python": "GB/T39412-6.2.1.1 密码安全不符合国密管理规定",
+        },
+        "PREDICTABLE_RANDOM": {
+            "java": "GB/T34944-6.2.6.10 不充分的随机数; GB/T39412-6.2.1.2 随机数安全",
+            "cpp": "GB/T34943-6.2.7.8 不充分的随机数; GB/T39412-6.2.1.2 随机数安全",
+            "csharp": "GB/T34946-6.2.6.10 不充分的随机数; GB/T39412-6.2.1.2 随机数安全",
+            "python": "GB/T39412-6.2.1.2 随机数安全",
+        },
+        "BUFFER_OVERFLOW": {
+            "java": "GB/T39412-8.2.6 内存缓冲区边界操作越界",
+            "cpp": "GB/T34943-6.2.3.6 缓冲区溢出; GB/T39412-8.2.6 内存缓冲区边界操作越界",
+            "csharp": "GB/T39412-8.2.6 内存缓冲区边界操作越界",
+            "python": "GB/T39412-8.2.6 内存缓冲区边界操作越界",
+        },
+        "FORMAT_STRING": {
+            "java": "GB/T39412-7.3.6 暴露危险的方法或函数",
+            "cpp": "GB/T34943-6.2.3.7 格式化字符串漏洞; GB/T39412-7.3.6 暴露危险的方法或函数",
+            "csharp": "GB/T39412-7.3.6 暴露危险的方法或函数",
+            "python": "GB/T39412-7.3.6 暴露危险的方法或函数",
+        },
+        "INTEGER_OVERFLOW": {
+            "java": "GB/T39412-6.1.1.12 数值赋值越界",
+            "cpp": "GB/T34943-6.2.3.8 整数溢出; GB/T39412-6.1.1.12 数值赋值越界",
+            "csharp": "GB/T39412-6.1.1.12 数值赋值越界",
+            "python": "GB/T39412-6.1.1.12 数值赋值越界",
+        },
+        "DESERIALIZATION": {
+            "java": "GB/T39412-7.1.2 反序列化",
+            "cpp": "GB/T39412-7.1.2 反序列化",
+            "csharp": "GB/T39412-7.1.2 反序列化",
+            "python": "GB/T39412-7.1.2 反序列化",
+        },
+    }
+    
+    lang_map = {"java": "java", "cpp": "cpp", "csharp": "csharp", "python": "python", "c": "cpp"}
+    lang = lang_map.get(language.lower(), "python")
+    
+    if vuln_type in vuln_to_gbt:
+        return vuln_to_gbt[vuln_type].get(lang, vuln_to_gbt[vuln_type].get("python", ""))
+    
+    # 默认返回通用基线
+    return "GB/T39412-7.3.6 暴露危险的方法或函数"
+
+
 def quick_scan_file(file_path: str, language: str) -> List[Dict]:
     """快速扫描单个文件"""
     findings = []
@@ -651,6 +759,7 @@ def quick_scan_file(file_path: str, language: str) -> List[Dict]:
                         "source": "quick_scan",
                         "language": language,
                         "code_snippet": line_stripped if line_stripped else "",
+                        "gbt_mapping": get_gbt_mapping(vuln_type, language),
                     })
                     break
     except Exception:
@@ -952,47 +1061,84 @@ def main():
         
         finding_data = {}
         for line in content.split('\n'):
-            if ':' in line:
-                key, _, value = line.partition(':')
-                key = key.strip()
-                value = value.strip()
-                if key == '编号':
-                    finding_data['id'] = value
-                elif key == '严重等级':
-                    finding_data['severity'] = value
-                elif key == '漏洞类型':
-                    finding_data['type'] = value
-                elif key == '文件路径':
-                    finding_data['file'] = value
-                elif key == '行号':
-                    try:
-                        finding_data['line'] = int(value)
-                    except:
-                        finding_data['line'] = 0
-                elif key == 'CWE':
-                    finding_data['cwe'] = value
-                elif key == '国标映射':
-                    finding_data['gbt_mapping'] = value
-                elif key == '来源':
-                    finding_data['source'] = value
-                elif key == '语言':
-                    finding_data['language'] = value
-                elif key == '问题代码':
-                    finding_data['code_snippet'] = value
-                elif key == '问题描述':
-                    finding_data['description'] = value
-                elif key == '修复方案':
-                    finding_data['fix'] = value
-                elif key == '验证方法':
-                    finding_data['verification'] = value
+            # 同时支持英文冒号 : (0x3a) 和中文冒号：(0xff1a)
+            # 优先使用中文冒号分割（避免代码示例中的英文冒号干扰）
+            if '\uff1a' in line:
+                sep = '\uff1a'
+            elif ':' in line:
+                sep = ':'
+            else:
+                continue
+            
+            key, _, value = line.partition(sep)
+            key = key.strip()
+            value = value.strip()
+            if key == '编号':
+                finding_data['id'] = value
+            elif key == '严重等级':
+                finding_data['severity'] = value
+            elif key == '漏洞类型':
+                finding_data['type'] = value
+            elif key == '文件路径':
+                finding_data['file'] = value
+            elif key == '行号':
+                try:
+                    finding_data['line'] = int(value)
+                except:
+                    finding_data['line'] = 0
+            elif key == 'CWE':
+                finding_data['cwe'] = value
+            elif key == '国标映射':
+                finding_data['gbt_mapping'] = value
+            elif key == '来源':
+                finding_data['source'] = value
+            elif key == '语言':
+                finding_data['language'] = value
+            elif key == '问题代码':
+                finding_data['code_snippet'] = value
+            elif key == '问题描述':
+                finding_data['description'] = value
+            elif key == '修复方案':
+                finding_data['fix'] = value
+            elif key == '验证方法':
+                finding_data['verification'] = value
         
         required_fields = ['file', 'line', 'code_snippet', 'type', 'severity', 'source']
         missing = [f for f in required_fields if not finding_data.get(f)]
         if missing:
             print(json.dumps({
                 "success": False,
-                "error": f"md文件缺少必填字段：{missing}",
-                "hint": "请确保md文件包含：文件路径、行号、问题代码、漏洞类型、严重等级、来源"
+                "error": f"md 文件缺少必填字段：{missing}",
+                "hint": "请确保 md 文件包含：文件路径、行号、问题代码、漏洞类型、严重等级、来源"
+            }, ensure_ascii=False, indent=2))
+            return
+        
+        # 修复方案质量检查（2026-04-18 新增 - 防止敷衍）
+        fix = finding_data.get('fix', '')
+        invalid_phrases = ["根据国标", "修复内容", "消除安全隐患", "加强", "进行过滤", "使用安全"]
+        if len(fix) < 30:
+            print(json.dumps({
+                "success": False,
+                "error": f"修复方案字数不足 30 字（当前{len(fix)}字），必须提供可执行的具体代码或步骤",
+                "current_fix": fix[:50],
+                "hint": "修复方案必须包含具体代码、命令、API 名称或配置参数，参考 SKILL.md 中的修复方案示例库"
+            }, ensure_ascii=False, indent=2))
+            return
+        if any(phrase in fix for phrase in invalid_phrases):
+            bad_phrase = next(p for p in invalid_phrases if p in fix)
+            print(json.dumps({
+                "success": False,
+                "error": f"修复方案包含敷衍内容 '{bad_phrase}'，必须提供具体代码、命令或配置",
+                "current_fix": fix[:80],
+                "hint": "禁止使用'根据国标''消除隐患''加强''进行'等敷衍词汇，必须提供可执行的技术方案"
+            }, ensure_ascii=False, indent=2))
+            return
+        if not any(kw in fix for kw in ["()", "=", ":", "替代", "使用", "改为", "移", "配置"]):
+            print(json.dumps({
+                "success": False,
+                "error": "修复方案未包含具体代码或 API，必须提供可执行的技术方案",
+                "current_fix": fix[:80],
+                "hint": "修复方案应包含代码示例（如 PreparedStatement）、命令（如 chmod 600）、API（如 BCrypt.hashpw）或配置参数"
             }, ensure_ascii=False, indent=2))
             return
         
