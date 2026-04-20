@@ -1,60 +1,70 @@
 {
-  "name": "gbt-code-audit-skill",
-  "version": "2.0.0",
-  "description": "基于中国国家标准（GB/T）的代码安全审计技能，支持多语言代码安全漏洞检测，利用 Agent 的 LLM 能力进行智能审计",
-  "author": "Code Audit Team",
-  "tags": ["security", "code-audit", "gbt", "vulnerability-detection", "china-standard"],
-  "keywords": ["code security", "audit", "vulnerability", "gbt", "china standard", "static analysis"],
-  "icon": "https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=code%20security%20audit%20shield%20icon&image_size=square",
-  "requirements": {
-    "python": ">=3.7"
-  },
-  "main": "skill.py",
-  "tools": [
-    {
-      "name": "quick_scan",
-      "description": "快速扫描：使用正则表达式模式匹配检测常见漏洞，提供基线结果",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "target": {
-            "type": "string",
-            "description": "目标代码目录路径"
-          }
-        },
-        "required": ["target"]
-      }
+    "name": "gbt-code-audit-skill",
+    "version": "2.1.0",
+    "description": "基于中国国家标准（GB/T）的代码安全审计技能 - 配置化管理版本",
+    "author": "Code Audit Team",
+    "tags": ["security", "code-audit", "gbt", "vulnerability-detection", "china-standard"],
+    "keywords": ["code security", "audit", "vulnerability", "gbt", "china standard", "static analysis"],
+    "icon": "https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=code%20security%20audit%20shield%20icon&image_size=square",
+    "requirements": {
+        "python": ">=3.7"
     },
-    {
-      "name": "finalize_report",
-      "description": "收尾报告：遍历 Markdown 文件去重并生成审计报告，自动清空 findings 目录",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "output": {
-            "type": "string",
-            "description": "报告输出路径（可选，默认生成带时间戳的文件名）"
-          },
-          "project": {
-            "type": "string",
-            "description": "项目名称（可选，默认从文件推断）"
-          },
-          "languages": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "语言列表（可选，默认从文件推断）"
-          },
-          "standards": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "标准列表（可选，默认从文件推断）"
-          },
-          "date": {
-            "type": "string",
-            "description": "审计日期（可选，默认使用当前日期）"
-          }
+    "main": "skill.py",
+    "config_files": [
+        "patterns_config.json",
+        "gbt_mapping_config.json",
+        "whitelist_patterns.json"
+    ],
+    "tools": [
+        {
+            "name": "quick_scan",
+            "description": "快速扫描：使用正则表达式模式匹配检测常见漏洞，提供基线结果",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "目标代码目录路径"
+                    },
+                    "--whitelist-enabled": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "是否启用白名单过滤"
+                    }
+                },
+                "required": ["target"]
+            }
+        },
+        {
+            "name": "finalize_report",
+            "description": "收尾报告：遍历 Markdown 文件去重并生成审计报告，自动清空 findings 目录",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "output": {
+                        "type": "string",
+                        "description": "报告输出路径（可选，默认生成带时间戳的文件名）"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "项目名称（可选，默认从文件推断）"
+                    },
+                    "languages": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "语言列表（可选，默认从文件推断）"
+                    },
+                    "standards": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "标准列表（可选，默认从文件推断）"
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "审计日期（可选，默认使用当前日期）"
+                    }
+                }
+            }
         }
-      }
-    }
-  ]
+    ]
 }
