@@ -217,7 +217,7 @@ CWE: CWE-78
 | `quick_scan` | 快速扫描：正则表达式模式匹配检测常见漏洞（**已自动填充国标映射**） | `python skill.py quick_scan <target>` |
 | `extract_code` | 提取代码：获取指定文件和行号的真实代码片段 | `python skill.py extract_code <file_path> <line_number> [--context=3]` |
 | `validate_finding` | 验证发现：验证 md 文件的代码片段是否真实存在（防幻觉） | `python skill.py validate_finding <md_file_path>` |
-| `finalize_report` | 收尾报告：遍历 md 文件去重 + 验证幻觉 + 生成报告 + 清空 findings 目录 | `python skill.py finalize_report [...]` |
+| `finalize_report` | 收尾报告：遍历 md 文件去重 + 验证幻觉 + 生成报告 + 清空 findings 目录 | `python skill.py finalize_report [--output=路径] [--project=名称] [--languages=A,B] [--standards=X,Y]` |
 | `get_gbt_mapping` | **新增**：根据漏洞类型和语言自动映射到 GB/T 国标（内部调用） | 在 quick_scan 中自动调用 |
 
 > 💡 **防幻觉机制**：
@@ -583,6 +583,11 @@ python skill.py extract_code test-samples/python/vulnerable_python.py 62
 
 ### 步骤 7：生成报告
 
+> ⚠️ **参数格式要求（2026-04-21 更新）**：
+> - 多值参数必须使用**逗号分隔**，如 `--standards=A,B,C`
+> - ❌ 禁止使用空格分隔：`--standards A B C`（会导致参数解析错误）
+> - ✅ 推荐使用 `=` 格式：`--standards=A,B,C`
+
 **自动生成带时间戳的报告文件名**：
 
 ```powershell
@@ -595,6 +600,12 @@ python skill.py finalize_report --project=test-samples --languages=java,cpp,csha
 
 ```powershell
 python skill.py finalize_report --output=my_custom_report.md --project=test-samples
+```
+
+**查看帮助信息**：
+
+```powershell
+python skill.py finalize_report --help
 ```
 
 **自动执行**：
@@ -743,7 +754,30 @@ sed -i 's/：/:/g' findings/*/*.md
 
 ---
 
-### 问题 3：报告生成后详细发现为空
+### 问题 3：报告名称变成参数值（如 GB/T39412-2020）
+
+**症状**：
+- 报告文件名变成 `GB/T39412-2020` 而非预期的 `audit_report.md`
+- 或报告生成在奇怪的目录下（如 `GB/T39412-2020/`）
+
+**原因**：
+- 使用空格分隔多值参数，导致多余参数被当作 positional argument
+- 例如 `--standards GB/T34943 GB/T34944 GB/T39412` 中，最后一个值被当作 `output_path`
+
+**解决方案**：
+```bash
+# ✅ 正确：使用逗号分隔
+python skill.py finalize_report --standards=GB/T34943,GB/T34944,GB/T39412
+
+# ❌ 错误：空格分隔导致参数解析错误
+python skill.py finalize_report --standards GB/T34943 GB/T34944 GB/T39412
+```
+
+> 💡 **2026-04-21 更新**：已改进参数解析，使用空格分隔时会提示错误信息。
+
+---
+
+### 问题 4：报告生成后详细发现为空
 
 **症状**：
 - `validation.success: false`
@@ -765,7 +799,7 @@ python skill.py finalize_report --output=审计报告_最终版.md --project=gbt
 
 ---
 
-### 问题 4：快速扫描结果为 0 或失败
+### 问题 5：快速扫描结果为 0 或失败
 
 **症状**：
 - `quick_scan` 返回 `total_findings: 0`
@@ -784,7 +818,7 @@ python skill.py finalize_report --output=审计报告_最终版.md --project=gbt
 
 ---
 
-### 问题 5：报告验证失败
+### 问题 6：报告验证失败
 
 **症状**：
 - `validation.issues: ["详细条目数 (0) < 总发现数 (36)"]`

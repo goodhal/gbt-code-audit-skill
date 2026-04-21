@@ -981,68 +981,40 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
     
     elif command == "finalize_report":
-        output_path = None
-        summary_updates = None
-        project_name = None
-        languages = None
-        standards = None
-        audit_date = None
+        import argparse
+        parser = argparse.ArgumentParser(description="生成审计报告")
+        parser.add_argument("--output", "-o", help="报告输出路径")
+        parser.add_argument("--project", "-p", help="项目名称")
+        parser.add_argument("--languages", "-l", help="语言列表（逗号分隔）")
+        parser.add_argument("--standards", "-s", help="标准列表（逗号分隔）")
+        parser.add_argument("--date", "-d", help="审计日期")
+        parser.add_argument("json_file", nargs="*", help="JSON摘要更新文件（可选）")
         
-        args = sys.argv[2:]
-        i = 0
-        while i < len(args):
-            arg = args[i]
-            
-            if arg in ("--output", "-o"):
-                if i + 1 < len(args):
-                    output_path = args[i + 1]
-                    i += 2
-                    continue
-            elif arg.startswith("--output="):
-                output_path = arg.split("=", 1)[1]
-            
-            elif arg in ("--project", "--project_name", "-p"):
-                if i + 1 < len(args):
-                    project_name = args[i + 1]
-                    i += 2
-                    continue
-            elif arg.startswith("--project=") or arg.startswith("--project_name="):
-                project_name = arg.split("=", 1)[1]
-            
-            elif arg in ("--languages", "-l"):
-                if i + 1 < len(args):
-                    languages = args[i + 1].split(",")
-                    i += 2
-                    continue
-            elif arg.startswith("--languages="):
-                languages = arg.split("=", 1)[1].split(",")
-            
-            elif arg in ("--standards", "-s"):
-                if i + 1 < len(args):
-                    standards = args[i + 1].split(",")
-                    i += 2
-                    continue
-            elif arg.startswith("--standards="):
-                standards = arg.split("=", 1)[1].split(",")
-            
-            elif arg in ("--date", "--audit_date", "-d"):
-                if i + 1 < len(args):
-                    audit_date = args[i + 1]
-                    i += 2
-                    continue
-            elif arg.startswith("--date=") or arg.startswith("--audit_date="):
-                audit_date = arg.split("=", 1)[1]
-            
-            elif arg.endswith(".json"):
-                try:
-                    summary_updates = json.loads(Path(arg).read_text(encoding="utf-8"))
-                except:
-                    pass
-            
-            elif not arg.startswith("-"):
-                output_path = arg
-            
-            i += 1
+        parsed = parser.parse_args(sys.argv[2:])
+        
+        if parsed.json_file:
+            for f in parsed.json_file:
+                if not f.endswith(".json"):
+                    print(json.dumps({
+                        "success": False,
+                        "error": f"参数格式错误：'{f}' 不是有效的 JSON 文件",
+                        "hint": "请使用逗号分隔多值参数，如 --standards=A,B,C 而非 --standards A B C",
+                        "usage": "python skill.py finalize_report [--output=路径] [--project=名称] [--languages=A,B] [--standards=X,Y]"
+                    }, ensure_ascii=False, indent=2))
+                    return
+        
+        output_path = parsed.output
+        project_name = parsed.project
+        languages = parsed.languages.split(",") if parsed.languages else None
+        standards = parsed.standards.split(",") if parsed.standards else None
+        audit_date = parsed.date
+        summary_updates = None
+        
+        if parsed.json_file and len(parsed.json_file) > 0 and parsed.json_file[0].endswith(".json"):
+            try:
+                summary_updates = json.loads(Path(parsed.json_file[0]).read_text(encoding="utf-8"))
+            except:
+                pass
         
         result = finalize_report(
             output_path,

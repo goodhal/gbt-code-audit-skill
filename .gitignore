@@ -53,7 +53,15 @@ unified_audit_report*.md
 audit_report*.md
 GBT_*.md
 scan_result.json
+scan_full.json
 spotbugs_result.json
+findings_backup*.zip
+GB/
+
+# 辅助脚本（审计过程临时生成）
+create_baseline.py
+save_scan.py
+validate_all.py
 
 # 备份文件
 *_backup/
