@@ -533,15 +533,6 @@ def finalize_report(
         quick_scan_count = stats["source_stats"].get("quick_scan", 0)
         llm_audit_count = stats["source_stats"].get("llm_audit", 0)
         
-        if validation_result.get("success", False):
-            findings_dir = Path("findings")
-            if findings_dir.exists():
-                import shutil
-                shutil.rmtree(findings_dir)
-                findings_dir.mkdir(parents=True, exist_ok=True)
-                (findings_dir / "baseline").mkdir(exist_ok=True)
-                (findings_dir / "llm_audit").mkdir(exist_ok=True)
-        
         return {
             "success": True,
             "output_path": output_path,
@@ -554,7 +545,6 @@ def finalize_report(
             "gbt_stats": stats["gbt_stats"],
             "gbt_totals": stats["gbt_prefix_stats"],
             "validation": validation_result,
-            "findings_cleaned": validation_result.get("success", False),
             "status": "finalized",
         }
     except Exception as e:
@@ -780,11 +770,59 @@ def parallel_quick_scan(file_paths: List[str], languages: Dict[str, str], max_wo
     return [finding for result in results for finding in result]
 
 
+def _cleanup_findings_dir() -> Dict:
+    """清理 findings 目录，清理前先压缩备份
+    
+    Returns:
+        清理结果字典
+    """
+    import shutil
+    import zipfile
+    from datetime import datetime
+    
+    findings_dir = Path("findings")
+    
+    if not findings_dir.exists():
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        (findings_dir / "baseline").mkdir(exist_ok=True)
+        (findings_dir / "llm_audit").mkdir(exist_ok=True)
+        return {"cleaned": False, "reason": "目录不存在，已创建新目录"}
+    
+    has_content = any(findings_dir.rglob("*.md"))
+    
+    if not has_content:
+        return {"cleaned": False, "reason": "目录为空，无需清理"}
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = Path(f"findings_backup_{timestamp}.zip")
+    
+    try:
+        with zipfile.ZipFile(backup_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for md_file in findings_dir.rglob("*.md"):
+                arcname = md_file.relative_to(findings_dir.parent)
+                zf.write(md_file, arcname)
+        
+        shutil.rmtree(findings_dir)
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        (findings_dir / "baseline").mkdir(exist_ok=True)
+        (findings_dir / "llm_audit").mkdir(exist_ok=True)
+        
+        return {
+            "cleaned": True,
+            "backup_file": str(backup_file),
+            "reason": f"已备份到 {backup_file} 并清理"
+        }
+    except Exception as e:
+        return {"cleaned": False, "error": f"清理失败：{e}"}
+
+
 def quick_scan(target_path: str, max_workers: int = MAX_WORKERS) -> Dict:
     """快速扫描：使用正则模式匹配检测常见漏洞"""
     target = Path(target_path)
     if not target.exists():
         return {"success": False, "error": f"路径不存在：{target_path}"}
+    
+    cleanup_result = _cleanup_findings_dir()
     
     code_files = []
     file_lang_map = {}
@@ -811,6 +849,7 @@ def quick_scan(target_path: str, max_workers: int = MAX_WORKERS) -> Dict:
         "languages": languages,
         "findings": findings,
         "total_findings": len(findings),
+        "cleanup": cleanup_result,
     }
 
 
