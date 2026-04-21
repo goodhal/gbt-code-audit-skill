@@ -31,10 +31,10 @@ LANGUAGE_EXTENSIONS = {
 
 
 def parse_finding_md(md_content: str) -> Dict:
-    """解析Markdown格式的审计发现文件
+    """解析 Markdown 格式的审计发现文件
     
     Args:
-        md_content: Markdown文件内容
+        md_content: Markdown 文件内容
         
     Returns:
         解析后的字典数据
@@ -83,6 +83,45 @@ def parse_finding_md(md_content: str) -> Dict:
             finding[mapped_key] = value
     
     return finding
+
+
+def validate_fix_quality(fix: str) -> Dict:
+    """验证修复方案的质量
+    
+    Args:
+        fix: 修复方案文本
+        
+    Returns:
+        验证结果字典
+    """
+    if len(fix) < 30:
+        return {
+            "valid": False,
+            "error": f"修复方案字数不足 30 字（当前{len(fix)}字），必须提供可执行的具体代码或步骤",
+            "current_fix": fix[:50],
+            "hint": "修复方案必须包含具体代码、命令、API 名称或配置参数，参考 SKILL.md 中的修复方案示例库"
+        }
+    
+    invalid_phrases = ["根据国标", "修复内容", "消除安全隐患", "加强", "进行过滤", "使用安全"]
+    for phrase in invalid_phrases:
+        if phrase in fix:
+            return {
+                "valid": False,
+                "error": f"修复方案包含敷衍内容 '{phrase}'，必须提供具体代码、命令或配置",
+                "current_fix": fix[:80],
+                "hint": "禁止使用'根据国标''消除隐患''加强''进行'等敷衍词汇，必须提供可执行的技术方案"
+            }
+    
+    code_indicators = ["()", "=", ":", "替代", "使用", "改为", "移", "配置"]
+    if not any(kw in fix for kw in code_indicators):
+        return {
+            "valid": False,
+            "error": "修复方案未包含具体代码或 API，必须提供可执行的技术方案",
+            "current_fix": fix[:80],
+            "hint": "修复方案应包含代码示例（如 PreparedStatement）、命令（如 chmod 600）、API（如 BCrypt.hashpw）或配置参数"
+        }
+    
+    return {"valid": True}
 
 
 def load_all_findings(findings_dir: str = "findings") -> List[Dict]:
@@ -1098,49 +1137,7 @@ def main():
             print(json.dumps({"success": False, "error": f"读取文件失败：{e}"}, ensure_ascii=False))
             return
         
-        finding_data = {}
-        for line in content.split('\n'):
-            # 同时支持英文冒号 : (0x3a) 和中文冒号：(0xff1a)
-            # 优先使用中文冒号分割（避免代码示例中的英文冒号干扰）
-            if '\uff1a' in line:
-                sep = '\uff1a'
-            elif ':' in line:
-                sep = ':'
-            else:
-                continue
-            
-            key, _, value = line.partition(sep)
-            key = key.strip()
-            value = value.strip()
-            if key == '编号':
-                finding_data['id'] = value
-            elif key == '严重等级':
-                finding_data['severity'] = value
-            elif key == '漏洞类型':
-                finding_data['type'] = value
-            elif key == '文件路径':
-                finding_data['file'] = value
-            elif key == '行号':
-                try:
-                    finding_data['line'] = int(value)
-                except:
-                    finding_data['line'] = 0
-            elif key == 'CWE':
-                finding_data['cwe'] = value
-            elif key == '国标映射':
-                finding_data['gbt_mapping'] = value
-            elif key == '来源':
-                finding_data['source'] = value
-            elif key == '语言':
-                finding_data['language'] = value
-            elif key == '问题代码':
-                finding_data['code_snippet'] = value
-            elif key == '问题描述':
-                finding_data['description'] = value
-            elif key == '修复方案':
-                finding_data['fix'] = value
-            elif key == '验证方法':
-                finding_data['verification'] = value
+        finding_data = parse_finding_md(content)
         
         required_fields = ['file', 'line', 'code_snippet', 'type', 'severity', 'source']
         missing = [f for f in required_fields if not finding_data.get(f)]
@@ -1152,32 +1149,14 @@ def main():
             }, ensure_ascii=False, indent=2))
             return
         
-        # 修复方案质量检查（2026-04-18 新增 - 防止敷衍）
         fix = finding_data.get('fix', '')
-        invalid_phrases = ["根据国标", "修复内容", "消除安全隐患", "加强", "进行过滤", "使用安全"]
-        if len(fix) < 30:
+        fix_validation = validate_fix_quality(fix)
+        if not fix_validation['valid']:
             print(json.dumps({
                 "success": False,
-                "error": f"修复方案字数不足 30 字（当前{len(fix)}字），必须提供可执行的具体代码或步骤",
-                "current_fix": fix[:50],
-                "hint": "修复方案必须包含具体代码、命令、API 名称或配置参数，参考 SKILL.md 中的修复方案示例库"
-            }, ensure_ascii=False, indent=2))
-            return
-        if any(phrase in fix for phrase in invalid_phrases):
-            bad_phrase = next(p for p in invalid_phrases if p in fix)
-            print(json.dumps({
-                "success": False,
-                "error": f"修复方案包含敷衍内容 '{bad_phrase}'，必须提供具体代码、命令或配置",
-                "current_fix": fix[:80],
-                "hint": "禁止使用'根据国标''消除隐患''加强''进行'等敷衍词汇，必须提供可执行的技术方案"
-            }, ensure_ascii=False, indent=2))
-            return
-        if not any(kw in fix for kw in ["()", "=", ":", "替代", "使用", "改为", "移", "配置"]):
-            print(json.dumps({
-                "success": False,
-                "error": "修复方案未包含具体代码或 API，必须提供可执行的技术方案",
-                "current_fix": fix[:80],
-                "hint": "修复方案应包含代码示例（如 PreparedStatement）、命令（如 chmod 600）、API（如 BCrypt.hashpw）或配置参数"
+                "error": fix_validation['error'],
+                "current_fix": fix_validation.get('current_fix', ''),
+                "hint": fix_validation.get('hint', '')
             }, ensure_ascii=False, indent=2))
             return
         
