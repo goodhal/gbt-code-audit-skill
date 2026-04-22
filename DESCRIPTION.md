@@ -14,13 +14,13 @@
 
 ```bash
 # 1. 快速扫描
-python skill.py quick_scan /path/to/code
+python skill.py quick_scan --target=/path/to/code
 
 # 2. LLM 审计（在 Agent 中执行）
 # 创建 findings/baseline/ 和 findings/llm_audit/ 目录下的 md 文件
 
 # 3. 生成报告
-python skill.py finalize_report --project=my-project --languages=java,cpp
+python skill.py finalize_report --output=audit_report.md --project=my-project --languages=java,cpp
 ```
 
 ## 支持标准
@@ -46,6 +46,12 @@ python skill.py finalize_report --project=my-project --languages=java,cpp
 - `findings/baseline/*.md` — 快速扫描发现
 - `findings/llm_audit/*.md` — LLM 审计发现
 - `audit_report_YYYYMMDD_HHMMSS.md` — 最终审计报告
+
+## 审计流程
+
+```
+快速扫描 (正则) → 基线入库 (md 文件) → LLM 深度审计（独立 + 逐个验证）→ 生成报告（批量验证 + 内存去重）
+```
 
 ## 版本
 
