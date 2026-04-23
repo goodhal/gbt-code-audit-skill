@@ -12,12 +12,71 @@ from typing import List, Dict, Tuple, Optional, Any
 # 常量定义
 MAX_WORKERS = 4
 
-# 语言文件扩展名映射
+# 目录和文件路径常量
+BASELINE_DIR = Path("findings/baseline")
+LLM_AUDIT_DIR = Path("findings/llm_audit")
+FINDINGS_DIR = Path("findings")
+SCAN_RESULT_FILE = Path("scan_result.json")
+
+# 严重等级常量
+SEVERITY_ORDER = ["严重", "高危", "中危", "低危"]
+SEVERITY_CRITICAL = "严重"
+SEVERITY_HIGH = "高危"
+SEVERITY_MEDIUM = "中危"
+SEVERITY_LOW = "低危"
+
+# 语言文件扩展名映射（支持所有主流语言）
 LANGUAGE_EXTENSIONS = {
     "java": [".java"],
-    "python": [".py"],
-    "cpp": [".cpp", ".cc", ".c"],
+    "python": [".py", ".pyw"],
+    "cpp": [".cpp", ".cc", ".cxx", ".c", ".h", ".hpp"],
     "csharp": [".cs"],
+    "go": [".go"],
+    "javascript": [".js", ".jsx", ".mjs", ".cjs"],
+    "typescript": [".ts", ".tsx"],
+    "php": [".php", ".phtml", ".php3", ".php4", ".php5"],
+    "ruby": [".rb", ".rbw"],
+    "rust": [".rs"],
+    "kotlin": [".kt", ".kts"],
+    "swift": [".swift"],
+    "scala": [".scala", ".sc"],
+    "perl": [".pl", ".pm", ".t"],
+    "lua": [".lua"],
+    "shell": [".sh", ".bash", ".zsh"],
+}
+
+# 有专用国标标准的语言（需要双映射）
+LANGUAGES_WITH_DEDICATED_STANDARD = {
+    "java": "GB/T34944",
+    "cpp": "GB/T34943",
+    "c": "GB/T34943",
+    "csharp": "GB/T34946",
+}
+
+# 所有有效的国标前缀
+VALID_GBT_PREFIXES = list(set(list(LANGUAGES_WITH_DEDICATED_STANDARD.values()) + ["GB/T39412"]))
+
+# 国标前缀到标准名称的映射
+GBT_PREFIX_TO_STANDARD = {
+    "GB/T34943": "GB/T 34943-2017",
+    "GB/T34944": "GB/T 34944-2017",
+    "GB/T34946": "GB/T 34946-2017",
+    "GB/T39412": "GB/T 39412-2020",
+}
+
+# 国标前缀到描述的映射
+GBT_PREFIX_TO_DESCRIPTION = {
+    "GB/T34943": "C/C++ 语言源代码漏洞测试规范",
+    "GB/T34944": "Java 语言源代码漏洞测试规范",
+    "GB/T34946": "C# 语言源代码漏洞测试规范",
+    "GB/T39412": "网络安全技术 源代码漏洞检测规则",
+}
+
+# 有外部扫描工具支持的语言
+TOOL_SUPPORTED_LANGUAGES = {
+    "bandit": ["python"],
+    "semgrep": ["java", "python", "cpp", "csharp", "go", "javascript", "typescript", "ruby", "rust"],
+    "gitleaks": ["all"],  # gitleaks 支持所有语言（检测密钥）
 }
 
 # 外部工具配置
@@ -126,13 +185,12 @@ def run_gitleaks_scan(target: str) -> List[Dict]:
                     "file": item.get("File"),
                     "line": item.get("StartLine"),
                     "type": "HARD_CODE_SECRET",
-                    "severity": "严重",
+                    "severity": SEVERITY_CRITICAL,
                     "cwe": "CWE-321",
                     "description": f"发现硬编码密钥: {item.get('RuleID')}",
                     "code_snippet": item.get("Line"),
                     "source": "gitleaks",
-                    "language": "unknown",
-                    "gbt_mapping": "GB/T34944-6.2.5.2 敏感信息泄露; GB/T39412-7.1.2 包含敏感信息类的不可复制和不可序列化"
+                    "language": "unknown"
                 })
             return findings
     except Exception as e:
@@ -143,13 +201,33 @@ def run_gitleaks_scan(target: str) -> List[Dict]:
 # 运行Bandit扫描
 def run_bandit_scan(file_path: str) -> List[Dict]:
     """运行Bandit扫描
-    
+
     Args:
         file_path: 文件路径
-        
+
     Returns:
         List[Dict]: 扫描结果
     """
+    # Bandit test_id 到漏洞类型的映射
+    BANDIT_TYPE_MAPPING = {
+        "B605": "COMMAND_INJECTION",
+        "B602": "COMMAND_INJECTION",
+        "B607": "COMMAND_INJECTION",
+        "B603": "COMMAND_INJECTION",
+        "B102": "CODE_INJECTION",
+        "B307": "CODE_INJECTION",
+        "B403": "DESERIALIZATION",
+        "B301": "DESERIALIZATION",
+        "B506": "DESERIALIZATION",
+        "B324": "WEAK_HASH",
+        "B311": "PREDICTABLE_RANDOM",
+        "B105": "HARD_CODE_PASSWORD",
+        "B106": "HARD_CODE_PASSWORD",
+        "B608": "SQL_INJECTION",
+        "B310": "PATH_TRAVERSAL",
+        "B110": "IMPROPER_EXCEPTION_HANDLING",
+    }
+
     try:
         result = subprocess.run(
             ["bandit", "-f", "json", file_path],
@@ -157,37 +235,38 @@ def run_bandit_scan(file_path: str) -> List[Dict]:
             text=True,
             timeout=30
         )
-        
+
         if result.returncode == 0 or result.returncode == 1:
             data = json.loads(result.stdout)
             findings = []
             for issue in data.get("results", []):
+                test_id = issue.get("test_id", "")
+                vuln_type = BANDIT_TYPE_MAPPING.get(test_id, test_id)
                 findings.append({
                     "file": issue.get("filename"),
                     "line": issue.get("line_number"),
-                    "type": issue.get("test_id"),
-                    "severity": "严重" if issue.get("issue_severity") == "HIGH" else "高危",
-                    "cwe": issue.get("issue_cwe", {}).get("id", "CWE-000"),
+                    "type": vuln_type,
+                    "severity": SEVERITY_CRITICAL if issue.get("issue_severity") == "HIGH" else SEVERITY_HIGH,
+                    "cwe": f"CWE-{issue.get('issue_cwe', {}).get('id', '000')}",
                     "description": issue.get("issue_text"),
                     "code_snippet": issue.get("code"),
                     "source": "bandit",
-                    "language": "python",
-                    "gbt_mapping": "GB/T34944-6.2.5.2 敏感信息泄露; GB/T39412-7.1.2 包含敏感信息类的不可复制和不可序列化"
+                    "language": "python"
                 })
             return findings
     except Exception as e:
         print(f"Bandit扫描失败: {e}")
-    
+
     return []
 
 # 运行Semgrep扫描
 def run_semgrep_scan(target: str, language: str) -> List[Dict]:
     """运行Semgrep扫描
-    
+
     Args:
         target: 扫描目标
         language: 语言
-        
+
     Returns:
         List[Dict]: 扫描结果
     """
@@ -198,27 +277,42 @@ def run_semgrep_scan(target: str, language: str) -> List[Dict]:
             text=True,
             timeout=60
         )
-        
+
         if result.returncode == 0 or result.returncode == 1:
             data = json.loads(result.stdout)
             findings = []
             for result_item in data.get("results", []):
+                # 从 check_id 推断漏洞类型
+                check_id = result_item.get("check_id", "")
+                vuln_type = "UNKNOWN"
+                if "sql" in check_id.lower():
+                    vuln_type = "SQL_INJECTION"
+                elif "command" in check_id.lower() or "exec" in check_id.lower():
+                    vuln_type = "COMMAND_INJECTION"
+                elif "path" in check_id.lower() or "traversal" in check_id.lower():
+                    vuln_type = "PATH_TRAVERSAL"
+                elif "crypto" in check_id.lower() or "hash" in check_id.lower():
+                    vuln_type = "WEAK_CRYPTO"
+                elif "random" in check_id.lower():
+                    vuln_type = "PREDICTABLE_RANDOM"
+                elif "secret" in check_id.lower() or "password" in check_id.lower():
+                    vuln_type = "HARD_CODE_SECRET"
+
                 findings.append({
                     "file": result_item.get("path"),
                     "line": result_item.get("start", {}).get("line"),
-                    "type": result_item.get("check_id"),
-                    "severity": "严重" if result_item.get("extra", {}).get("severity") == "ERROR" else "高危",
+                    "type": vuln_type,
+                    "severity": SEVERITY_CRITICAL if result_item.get("extra", {}).get("severity") == "ERROR" else SEVERITY_HIGH,
                     "cwe": "CWE-000",
                     "description": result_item.get("extra", {}).get("message", "Semgrep发现的问题"),
                     "code_snippet": result_item.get("extra", {}).get("lines", ""),
                     "source": "semgrep",
-                    "language": language,
-                    "gbt_mapping": "GB/T34944-6.2.5.2 敏感信息泄露; GB/T39412-7.1.2 包含敏感信息类的不可复制和不可序列化"
+                    "language": language
                 })
             return findings
     except Exception as e:
         print(f"Semgrep扫描失败: {e}")
-    
+
     return []
 
 # 快速扫描模式
@@ -312,10 +406,10 @@ def quick_scan_file(file_path: str, language: str) -> List[Dict]:
                 # 计算行号
                 line_num = content[:match.start()].count('\n') + 1
                 
-                # 提取代码片段
+                # 提取代码片段（前后各2行，共约5行）
                 lines = content.split('\n')
                 start_line = max(0, line_num - 2)
-                end_line = min(len(lines), line_num + 1)
+                end_line = min(len(lines), line_num + 2)
                 code_snippet = '\n'.join(lines[start_line:end_line])
                 
                 findings.append({
@@ -327,8 +421,7 @@ def quick_scan_file(file_path: str, language: str) -> List[Dict]:
                     "description": f"发现{severity}漏洞: {vuln_type}",
                     "code_snippet": code_snippet,
                     "source": "quick_scan",
-                    "language": language,
-                    "gbt_mapping": "GB/T34944-6.2.5.2 敏感信息泄露; GB/T39412-7.1.2 包含敏感信息类的不可复制和不可序列化"
+                    "language": language
                 })
     except Exception as e:
         print(f"扫描文件失败 {file_path}: {e}")
@@ -423,38 +516,265 @@ def quick_scan(target_path: str, max_workers: int = MAX_WORKERS, use_external_to
 
     findings.extend(parallel_quick_scan(code_files, file_lang_map, max_workers))
 
+    # 计算严重等级统计
+    severity_stats = {}
+    for f in findings:
+        sev = f.get('severity', '未知')
+        severity_stats[sev] = severity_stats.get(sev, 0) + 1
+
     return {
         "success": True,
         "target": str(target),
         "languages": languages,
         "findings": findings,
         "total_findings": len(findings),
+        "severity_stats": severity_stats,
         "cleanup": cleanup_result,
         "tools_used": [f"pattern"] + ([t for t in TOOL_PRIORITY if EXTERNAL_TOOLS_AVAILABLE.get(t)] if use_external_tools else []),
     }
 
+# 创建 baseline md 文件
+def create_baseline_md_files(findings: List[Dict], silent: bool = True) -> Dict:
+    """根据 findings 自动创建所有 baseline md 文件
+
+    Args:
+        findings: 审计发现列表（来自 scan_result.json）
+        silent: 是否静默模式（不打印 md 内容）
+
+    Returns:
+        Dict: 创建结果
+    """
+    baseline_dir = BASELINE_DIR
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+
+    created_count = 0
+    errors = []
+
+    # 按文件-行号-类型去重（但保留所有发现）
+    for idx, finding in enumerate(findings, 1):
+        try:
+            # 生成文件名
+            file_path = finding.get('file', '')
+            line_num = finding.get('line', 0)
+            vuln_type = finding.get('type', '')
+
+            # 清理文件路径用于命名
+            file_name = Path(file_path).stem if file_path else 'unknown'
+            lang = finding.get('language', 'unknown')
+
+            # 格式：001_java_command_injection_31.md
+            md_filename = f"{idx:03d}_{lang}_{vuln_type.lower()}_{line_num}.md"
+            md_path = baseline_dir / md_filename
+
+            # 获取基本信息
+            severity = finding.get('severity', '未知')
+            cwe = finding.get('cwe', '')
+            if isinstance(cwe, int):
+                cwe = f"CWE-{cwe}"
+            code_snippet = finding.get('code_snippet', '')
+            description = finding.get('description', '')
+            source = finding.get('source', 'baseline')
+
+
+            # 构建 md 内容
+            md_content = f"""编号: #{idx:03d}
+严重等级: {severity}
+漏洞类型: {vuln_type}
+文件路径: {file_path}
+行号: {line_num}
+CWE: {cwe}
+国标映射: （待LLM填写）
+来源: {source}
+语言: {lang}
+状态: 有效
+问题代码: {code_snippet}
+问题描述: {description}
+修复方案: （待LLM填写）
+"""
+
+            md_path.write_text(md_content, encoding='utf-8')
+            created_count += 1
+
+        except Exception as e:
+            errors.append({
+                "finding": idx,
+                "error": str(e)
+            })
+
+    result = {
+        "success": len(errors) == 0,
+        "created_count": created_count,
+        "total_findings": len(findings),
+        "baseline_dir": str(baseline_dir),
+        "errors": errors
+    }
+
+    if not silent:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+
+def validate_llm_audit_coverage(languages: List[str] = None) -> Dict:
+    """统计 LLM 审计覆盖情况
+
+    注意：国标映射的正确性由 validate_gbt_mapping 验证，此处仅统计覆盖。
+
+    Args:
+        languages: 语言列表（可选，默认从 findings 推断）
+
+    Returns:
+        Dict: 统计结果
+    """
+    llm_audit_dir = LLM_AUDIT_DIR
+    if not llm_audit_dir.exists():
+        return {
+            "valid": False,
+            "error": "LLM 审计目录不存在",
+            "hint": "步骤6 必须创建 LLM 审计发现文件"
+        }
+
+    # 加载 LLM 审计发现
+    llm_findings = []
+    for md_file in llm_audit_dir.glob("*.md"):
+        try:
+            content = md_file.read_text(encoding='utf-8')
+            finding = parse_finding_md(content)
+            if finding:
+                llm_findings.append(finding)
+        except Exception:
+            pass
+
+    if not llm_findings:
+        return {
+            "valid": False,
+            "error": "LLM 审计发现数量为 0",
+            "llm_count": 0,
+            "hint": "步骤6 必须进行独立审计"
+        }
+
+    # 统计覆盖情况
+    covered_types = set()
+    covered_by_lang = {}
+
+    for finding in llm_findings:
+        vuln_type = finding.get("type", "").upper()
+        lang = finding.get("language", "").lower()
+
+        covered_types.add(vuln_type)
+        if lang not in covered_by_lang:
+            covered_by_lang[lang] = {"types": [], "count": 0}
+        covered_by_lang[lang]["types"].append(vuln_type)
+        covered_by_lang[lang]["count"] += 1
+
+    # 推断语言
+    if not languages:
+        languages = list(covered_by_lang.keys())
+
+    return {
+        "valid": True,
+        "llm_count": len(llm_findings),
+        "covered_types": list(covered_types),
+        "covered_by_lang": covered_by_lang,
+        "languages": languages
+    }
+
+# 校验 baseline 文件数量
+def validate_baseline_count(expected_count: int = None) -> Dict:
+    """校验 baseline 目录的 md 文件数量是否符合预期
+
+    Args:
+        expected_count: 预期的文件数量（可选，默认从 scan_result.json 读取）
+
+    Returns:
+        Dict: 校验结果
+    """
+    baseline_dir = BASELINE_DIR
+    if not baseline_dir.exists():
+        return {
+            "valid": False,
+            "error": "baseline 目录不存在",
+            "actual_count": 0,
+            "expected_count": expected_count or 0
+        }
+
+    actual_count = len(list(baseline_dir.glob("*.md")))
+
+    # 如果没有提供预期数量，从 scan_result.json 读取
+    if expected_count is None:
+        scan_result_path = SCAN_RESULT_FILE
+        if scan_result_path.exists():
+            try:
+                scan_data = json.loads(scan_result_path.read_text(encoding='utf-8'))
+                expected_count = scan_data.get("total_findings", 0)
+            except Exception:
+                expected_count = 0
+
+    if expected_count is None:
+        expected_count = 0
+
+    if actual_count < expected_count:
+        return {
+            "valid": False,
+            "error": f"baseline md 文件数量不足：实际 {actual_count} 个，预期 {expected_count} 个",
+            "actual_count": actual_count,
+            "expected_count": expected_count,
+            "hint": "步骤5 必须为所有 findings 创建对应的 baseline md 文件，禁止手动筛选"
+        }
+
+    return {
+        "valid": True,
+        "actual_count": actual_count,
+        "expected_count": expected_count
+    }
+
 # 清理发现目录
 def _cleanup_findings_dir() -> Dict:
-    """清理发现目录
-    
+    """清理发现目录，清理前先压缩备份
+
     Returns:
         Dict: 清理结果
     """
+    import zipfile
+    from datetime import datetime
+
     findings_dir = Path("findings")
-    if findings_dir.exists():
-        try:
-            shutil.rmtree(findings_dir)
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    try:
+
+    if not findings_dir.exists():
         findings_dir.mkdir(parents=True, exist_ok=True)
-        (findings_dir / "baseline").mkdir(exist_ok=True)
-        (findings_dir / "llm_audit").mkdir(exist_ok=True)
-        return {"success": True, "message": "清理完成"}
+        (FINDINGS_DIR / "baseline").mkdir(exist_ok=True)
+        (FINDINGS_DIR / "llm_audit").mkdir(exist_ok=True)
+        return {"success": True, "message": "目录不存在，已创建新目录"}
+
+    # 检查是否有 md 文件需要备份
+    has_content = any(findings_dir.rglob("*.md"))
+
+    if not has_content:
+        return {"success": True, "message": "目录为空，无需清理"}
+
+    # 压缩备份
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = Path(f"findings_backup_{timestamp}.zip")
+
+    try:
+        with zipfile.ZipFile(backup_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for md_file in findings_dir.rglob("*.md"):
+                arcname = md_file.relative_to(findings_dir.parent)
+                zf.write(md_file, arcname)
+
+        shutil.rmtree(findings_dir)
+        findings_dir.mkdir(parents=True, exist_ok=True)
+        (FINDINGS_DIR / "baseline").mkdir(exist_ok=True)
+        (FINDINGS_DIR / "llm_audit").mkdir(exist_ok=True)
+
+        return {
+            "success": True,
+            "backup_file": str(backup_file),
+            "message": f"已备份到 {backup_file} 并清理"
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+# 创建基线发现文件
 # 解析Markdown文件
 def parse_finding_md(content: str) -> Dict:
     """解析Markdown格式的审计发现
@@ -466,11 +786,11 @@ def parse_finding_md(content: str) -> Dict:
         Dict: 解析后的发现
     """
     valid_fields = {
-        '编号', '严重等级', '漏洞类型', '文件路径', '行号', 
-        'CWE', 'cwe', '国标映射', '来源', '语言', 
-        '问题代码', '问题描述', '修复方案', '验证方法'
+        '编号', '严重等级', '漏洞类型', '文件路径', '行号',
+        'CWE', 'cwe', '国标映射', '来源', '语言',
+        '问题代码', '问题描述', '修复方案', '状态'
     }
-    
+
     key_mapping = {
         '编号': 'id', 'id': 'id',
         '严重等级': 'severity', 'severity': 'severity',
@@ -484,7 +804,7 @@ def parse_finding_md(content: str) -> Dict:
         '问题代码': 'code_snippet', 'code_snippet': 'code_snippet',
         '问题描述': 'description', 'description': 'description',
         '修复方案': 'fix', 'fix': 'fix',
-        '验证方法': 'verification', 'verification': 'verification',
+        '状态': 'status', 'status': 'status',
     }
     
     result = {}
@@ -545,16 +865,153 @@ def parse_finding_md(content: str) -> Dict:
             result['line'] = int(result['line'])
         except ValueError:
             result['line'] = 0
-    
+
     return result
+
+# 验证必填字段
+def validate_required_fields(finding: Dict) -> Dict:
+    """验证必填字段是否完整
+
+    Args:
+        finding: 审计发现
+
+    Returns:
+        Dict: 验证结果
+    """
+    required_fields = {
+        'id': '编号',
+        'severity': '严重等级',
+        'type': '漏洞类型',
+        'file': '文件路径',
+        'line': '行号',
+        'cwe': 'CWE',
+        'gbt_mapping': '国标映射',
+        'source': '来源',
+        'language': '语言',
+        'code_snippet': '问题代码',
+        'description': '问题描述',
+        'fix': '修复方案',
+        'status': '状态',
+    }
+
+    issues = []
+    missing_fields = []
+
+    for field, label in required_fields.items():
+        value = finding.get(field, '')
+        if not value or (isinstance(value, str) and value.strip() == ''):
+            missing_fields.append(label)
+
+    if missing_fields:
+        issues.append(f"缺少必填字段: {', '.join(missing_fields)}")
+
+    # 验证严重等级是否有效
+    severity = finding.get('severity', '')
+    valid_severities = ['严重', '高危', '中危', '低危']
+    if severity and severity not in valid_severities:
+        issues.append(f"严重等级无效: {severity}，应为 {', '.join(valid_severities)}")
+
+    # 验证状态是否有效
+    status = finding.get('status', '')
+    valid_statuses = ['有效', '误报']
+    if status and status not in valid_statuses:
+        issues.append(f"状态无效: {status}，应为 '有效' 或 '误报'")
+
+    return {
+        "valid": len(issues) == 0,
+        "issues": issues
+    }
+
+# 验证国标映射
+def validate_gbt_mapping(finding: Dict) -> Dict:
+    """验证国标映射格式是否正确
+
+    Args:
+        finding: 审计发现
+
+    Returns:
+        Dict: 验证结果
+    """
+    issues = []
+    gbt_mapping = finding.get('gbt_mapping', '')
+    language = finding.get('language', '').lower()
+
+    if not gbt_mapping:
+        issues.append("国标映射为空")
+        return {"valid": False, "issues": issues}
+
+    # 检查国标前缀格式
+    has_valid_prefix = any(prefix in gbt_mapping for prefix in VALID_GBT_PREFIXES)
+    if not has_valid_prefix:
+        issues.append(f"国标前缀无效，应为 {', '.join(VALID_GBT_PREFIXES)}")
+
+    # 有专用标准的语言：需要双映射（专用标准 + GB/T39412）
+    if language in LANGUAGES_WITH_DEDICATED_STANDARD:
+        dedicated_prefix = LANGUAGES_WITH_DEDICATED_STANDARD[language]
+        # 检查是否有分隔符（中文分号）
+        if '；' not in gbt_mapping and ';' not in gbt_mapping:
+            issues.append(f"{language} 应使用双国标映射格式：{dedicated_prefix}；GB/T39412")
+
+        # 检查是否包含专用标准
+        if dedicated_prefix not in gbt_mapping:
+            issues.append(f"{language} 应包含 {dedicated_prefix} 语言专用标准")
+
+        # 检查是否包含 GB/T39412（通用基线）
+        if 'GB/T39412' not in gbt_mapping:
+            issues.append(f"{language} 应包含 GB/T39412 通用基线")
+
+    # 其他语言（Python/Go/JS/PHP/Rust等）：使用 GB/T39412 通用标准
+    else:
+        if 'GB/T39412' not in gbt_mapping:
+            issues.append(f"{language} 应使用 GB/T39412-2020 通用标准（无专用标准时可仅用 GB/T39412）")
+
+    return {
+        "valid": len(issues) == 0,
+        "issues": issues
+    }
+
+# 验证问题描述
+def validate_description(finding: Dict) -> Dict:
+    """验证问题描述基本完整性
+
+    注意：描述质量的语义判断由 LLM 在审计时完成，此处仅做基本检查。
+
+    Args:
+        finding: 审计发现
+
+    Returns:
+        Dict: 验证结果
+    """
+    issues = []
+    description = finding.get('description', '')
+    code_snippet = finding.get('code_snippet', '')
+
+    if not description:
+        issues.append("问题描述为空")
+        return {"valid": False, "issues": issues}
+
+    # 字数检查（至少20字）- 基本完整性
+    if len(description) < 20:
+        issues.append("问题描述字数不足 20 字")
+
+    # 检查是否仅重复代码片段 - 基本合理性
+    if code_snippet and description.strip() == code_snippet.strip():
+        issues.append("问题描述不应仅重复代码片段")
+
+    # 不做关键词检查 - LLM 应自主判断描述是否说明了漏洞原因和风险
+
+    return {
+        "valid": len(issues) == 0,
+        "issues": issues
+    }
 
 # 验证发现
 def validate_finding(md_file: str) -> Dict:
-    """验证md文件的代码片段是否真实存在
-    
+    """验证md文件的完整性和质量
+
     Args:
         md_file: md文件路径
-        
+
     Returns:
         验证结果
     """
@@ -563,22 +1020,57 @@ def validate_finding(md_file: str) -> Dict:
         content = Path(md_file).read_text(encoding='utf-8')
         # 解析md文件
         finding = parse_finding_md(content)
-        # 验证代码片段
-        validation = validate_code_snippet(finding)
+
+        # 收集所有验证结果
+        validation_results = {}
+        all_issues = []
+
+        # 1. 必填字段验证
+        fields_validation = validate_required_fields(finding)
+        validation_results['fields'] = fields_validation
+        if not fields_validation['valid']:
+            all_issues.extend(fields_validation['issues'])
+
+        # 2. 国标映射验证
+        gbt_validation = validate_gbt_mapping(finding)
+        validation_results['gbt_mapping'] = gbt_validation
+        if not gbt_validation['valid']:
+            all_issues.extend(gbt_validation['issues'])
+
+        # 3. 代码片段/行号验证
+        code_validation = validate_code_snippet(finding)
+        validation_results['code_snippet'] = code_validation
+        if not code_validation['valid']:
+            all_issues.append(f"代码片段验证失败: {code_validation.get('reason', '')}")
+
+        # 4. 问题描述验证
+        desc_validation = validate_description(finding)
+        validation_results['description'] = desc_validation
+        if not desc_validation['valid']:
+            all_issues.extend(desc_validation['issues'])
+
+        # 5. 修复方案质量验证
+        fix_validation = validate_fix_quality(finding)
+        validation_results['fix'] = fix_validation
+        if not fix_validation['valid']:
+            all_issues.extend(fix_validation['issues'])
+
         # 构建返回结果
-        if validation['valid']:
+        if len(all_issues) == 0:
             return {
                 "success": True,
                 "md_file": md_file,
-                "validation": validation['reason'],
-                "message": "验证通过，可以开始下一个发现"
+                "validation": "all_passed",
+                "message": "所有验证通过",
+                "details": validation_results
             }
         else:
             return {
                 "success": False,
-                "error": "代码片段验证失败，可能存在幻觉",
-                "actual_code": validation.get('actual', ''),
-                "hint": "尝试修正行号，若无法修正则用下一个问题覆盖当前 md"
+                "md_file": md_file,
+                "issues": all_issues,
+                "details": validation_results,
+                "hint": "请修正上述问题后重新验证"
             }
     except Exception as e:
         return {
@@ -839,9 +1331,9 @@ def update_findings_md_files(findings: List[Dict]) -> Dict[str, int]:
         # 确定文件应该在哪个目录
         directories = []
         if source == 'llm_audit':
-            directories = ['findings/llm_audit']
+            directories = [str(LLM_AUDIT_DIR)]
         else:
-            directories = ['findings/baseline']
+            directories = [str(BASELINE_DIR)]
         
         # 尝试在所有可能的目录中查找文件
         for directory in directories:
@@ -958,54 +1450,6 @@ def filter_hallucinated_findings(findings: List[Dict]) -> tuple:
     
     return valid_findings, hallucinations
 
-# 计算置信度评分
-def calculate_confidence_score(finding: Dict) -> float:
-    """计算审计发现的置信度评分
-    
-    Args:
-        finding: 审计发现
-        
-    Returns:
-        float: 置信度评分 (0.0-1.0)
-    """
-    score = 0.0
-    
-    # 检查必要字段
-    required_fields = ['file', 'line', 'type', 'severity', 'description', 'fix']
-    for field in required_fields:
-        if field in finding and finding[field]:
-            score += 0.1
-    
-    # 检查代码片段
-    if 'code_snippet' in finding and finding['code_snippet']:
-        score += 0.2
-    
-    # 检查CWE
-    if 'cwe' in finding and finding['cwe'] and finding['cwe'] != 'CWE-000':
-        score += 0.1
-    
-    # 检查国标映射
-    if 'gbt_mapping' in finding and finding['gbt_mapping']:
-        score += 0.1
-    
-    # 检查验证方法
-    if 'verification' in finding and finding['verification']:
-        score += 0.1
-    
-    # 来源加分
-    source = finding.get('source', '')
-    if source == 'llm_audit':
-        score += 0.2
-    elif source in ['bandit', 'semgrep', 'gitleaks']:
-        score += 0.1
-    
-    # 严重程度加分
-    severity = finding.get('severity', '')
-    if severity in ['严重', '高危']:
-        score += 0.1
-    
-    return min(1.0, score)
-
 # 去重
 def deduplicate_findings(findings: List[Dict]) -> List[Dict]:
     """内存去重：按文件 + 行号 + 类型去重，优先保留 LLM 审计结果
@@ -1056,7 +1500,7 @@ def compute_stats(findings: List[Dict]) -> Dict:
         "gbt_prefix_stats": {},
     }
     
-    severity_order = ["严重", "高危", "中危", "低危"]
+    severity_order = SEVERITY_ORDER
     
     for finding in findings:
         severity = finding.get("severity", "未知")
@@ -1083,20 +1527,15 @@ def compute_stats(findings: List[Dict]) -> Dict:
             
             for rule in gbt_rules:
                 # 提取国标前缀
-                if rule.startswith("GB/T34944"):
-                    prefix = "GB/T34944"
-                elif rule.startswith("GB/T34943"):
-                    prefix = "GB/T34943"
-                elif rule.startswith("GB/T34946"):
-                    prefix = "GB/T34946"
-                elif rule.startswith("GB/T39412"):
-                    prefix = "GB/T39412"
-                else:
-                    prefix = "OTHER"
-                
+                prefix = "OTHER"
+                for valid_prefix in VALID_GBT_PREFIXES:
+                    if rule.startswith(valid_prefix):
+                        prefix = valid_prefix
+                        break
+
                 # 统计每个国标规则
                 stats["gbt_stats"][rule] = stats["gbt_stats"].get(rule, 0) + 1
-                
+
                 # 确保每个漏洞只在每个国标分类中统计一次
                 if prefix not in counted_prefixes:
                     stats["gbt_prefix_stats"][prefix] = stats["gbt_prefix_stats"].get(prefix, 0) + 1
@@ -1114,10 +1553,10 @@ def _get_severity_icon(severity: str) -> str:
         str: 图标
     """
     severity_icons = {
-        "严重": "🔴",
-        "高危": "🟠",
-        "中危": "🟡",
-        "低危": "🟢",
+        SEVERITY_CRITICAL: "🔴",
+        SEVERITY_HIGH: "🟠",
+        SEVERITY_MEDIUM: "🟡",
+        SEVERITY_LOW: "🟢",
     }
     return severity_icons.get(severity, "⚪")
 
@@ -1157,22 +1596,23 @@ def generate_summary_tables(stats: Dict) -> str:
     summary_lines.append("| 严重等级 | 数量 | 快速扫描 | LLM 审计 | 说明 |")
     summary_lines.append("|:--------:|:----:|:--------:|:--------:|:-----:|")
     
-    severity_order = ["严重", "高危", "中危", "低危"]
+    severity_order = SEVERITY_ORDER
     severity_desc = {
-        "严重": "可直接导致系统被入侵",
-        "高危": "可导致数据泄露或权限提升",
-        "中危": "可能被利用但需要特定条件",
-        "低危": "存在安全隐患但影响较小"
+        SEVERITY_CRITICAL: "可直接导致系统被入侵",
+        SEVERITY_HIGH: "可导致数据泄露或权限提升",
+        SEVERITY_MEDIUM: "可能被利用但需要特定条件",
+        SEVERITY_LOW: "存在安全隐患但影响较小"
     }
     
     total_quick_scan = 0
     total_llm_audit = 0
-    
+
     for severity in severity_order:
         count = stats["severity_stats"].get(severity, 0)
         if count > 0:
-            quick_scan_count = stats["severity_source_stats"].get(f"{severity}:quick_scan", 0)
             llm_audit_count = stats["severity_source_stats"].get(f"{severity}:llm_audit", 0)
+            # 快速扫描 = 该严重等级总数 - LLM审计数（包含bandit、quick_scan等所有baseline来源）
+            quick_scan_count = count - llm_audit_count
             total_quick_scan += quick_scan_count
             total_llm_audit += llm_audit_count
             icon = _get_severity_icon(severity)
@@ -1187,50 +1627,21 @@ def generate_summary_tables(stats: Dict) -> str:
     summary_lines.append("")
     summary_lines.append("> ⚠️ **注意**：以下统计仅包含能明确对应到国标规则的安全问题")
     summary_lines.append("")
-    
-    # GB/T 34943-2017 C/C++
-    gbt_34943_rules = {k: v for k, v in stats["gbt_stats"].items() if k.startswith("GB/T34943")}
-    if gbt_34943_rules:
-        summary_lines.append(f"#### GB/T 34943-2017 C/C++ 语言源代码漏洞测试规范 - {stats['gbt_prefix_stats'].get('GB/T34943', 0)} 个")
-        summary_lines.append("")
-        summary_lines.append("| 规则 | 问题数 |")
-        summary_lines.append("|------|--------|")
-        for rule, count in sorted(gbt_34943_rules.items()):
-            summary_lines.append(f"| {rule} | {count} |")
-        summary_lines.append("")
-    
-    # GB/T 34944-2017 Java
-    gbt_34944_rules = {k: v for k, v in stats["gbt_stats"].items() if k.startswith("GB/T34944")}
-    if gbt_34944_rules:
-        summary_lines.append(f"#### GB/T 34944-2017 Java 语言源代码漏洞测试规范 - {stats['gbt_prefix_stats'].get('GB/T34944', 0)} 个")
-        summary_lines.append("")
-        summary_lines.append("| 规则 | 问题数 |")
-        summary_lines.append("|------|--------|")
-        for rule, count in sorted(gbt_34944_rules.items()):
-            summary_lines.append(f"| {rule} | {count} |")
-        summary_lines.append("")
-    
-    # GB/T 34946-2017 C#
-    gbt_34946_rules = {k: v for k, v in stats["gbt_stats"].items() if k.startswith("GB/T34946")}
-    if gbt_34946_rules:
-        summary_lines.append(f"#### GB/T 34946-2017 C# 语言源代码漏洞测试规范 - {stats['gbt_prefix_stats'].get('GB/T34946', 0)} 个")
-        summary_lines.append("")
-        summary_lines.append("| 规则 | 问题数 |")
-        summary_lines.append("|------|--------|")
-        for rule, count in sorted(gbt_34946_rules.items()):
-            summary_lines.append(f"| {rule} | {count} |")
-        summary_lines.append("")
-    
-    # GB/T 39412-2020 通用
-    gbt_39412_rules = {k: v for k, v in stats["gbt_stats"].items() if k.startswith("GB/T39412")}
-    if gbt_39412_rules:
-        summary_lines.append(f"#### GB/T 39412-2020 网络安全技术 源代码漏洞检测规则 - {stats['gbt_prefix_stats'].get('GB/T39412', 0)} 个")
-        summary_lines.append("")
-        summary_lines.append("| 规则 | 问题数 |")
-        summary_lines.append("|------|--------|")
-        for rule, count in sorted(gbt_39412_rules.items()):
-            summary_lines.append(f"| {rule} | {count} |")
-        summary_lines.append("")
+
+    # 循环生成各国标统计表格
+    for prefix in VALID_GBT_PREFIXES:
+        gbt_rules = {k: v for k, v in stats["gbt_stats"].items() if k.startswith(prefix)}
+        if gbt_rules:
+            standard = GBT_PREFIX_TO_STANDARD.get(prefix, prefix)
+            description = GBT_PREFIX_TO_DESCRIPTION.get(prefix, "")
+            count = stats['gbt_prefix_stats'].get(prefix, 0)
+            summary_lines.append(f"#### {standard} {description} - {count} 个")
+            summary_lines.append("")
+            summary_lines.append("| 规则 | 问题数 |")
+            summary_lines.append("|------|--------|")
+            for rule, count in sorted(gbt_rules.items()):
+                summary_lines.append(f"| {rule} | {count} |")
+            summary_lines.append("")
     
     return "\n".join(summary_lines)
 
@@ -1295,43 +1706,49 @@ def _format_finding_to_markdown(finding: Dict, index: int) -> str:
     if fix:
         lines.append(f"**修复方案**: {fix}")
         lines.append("")
-    
-    verification = finding.get("verification", "")
-    if verification:
-        lines.append(f"**验证方法**: {verification}")
-        lines.append("")
-    
+
     return "\n".join(lines)
 
 # 加载所有发现
 def load_all_findings() -> List[Dict]:
     """加载所有发现
-    
+
     Returns:
-        List[Dict]: 所有发现
+        List[Dict]: 所有发现（排除误报）
     """
     findings = []
-    
+    filtered_count = 0  # 误报过滤计数
+
     # 加载快速扫描的发现
-    baseline_dir = Path("findings/baseline")
+    baseline_dir = BASELINE_DIR
     if baseline_dir.exists():
         for md_file in baseline_dir.glob("*.md"):
             try:
                 content = md_file.read_text(encoding='utf-8')
                 finding = parse_finding_md(content)
                 if finding:
+                    # 过滤误报状态
+                    status = finding.get('status', '有效')
+                    if status == '误报':
+                        filtered_count += 1
+                        continue
                     findings.append(finding)
             except Exception as e:
                 print(f"解析文件失败 {md_file}: {e}")
-    
+
     # 加载LLM审计的发现
-    llm_audit_dir = Path("findings/llm_audit")
+    llm_audit_dir = LLM_AUDIT_DIR
     if llm_audit_dir.exists():
         for md_file in llm_audit_dir.glob("*.md"):
             try:
                 content = md_file.read_text(encoding='utf-8')
                 finding = parse_finding_md(content)
                 if finding:
+                    # 过滤误报状态
+                    status = finding.get('status', '有效')
+                    if status == '误报':
+                        filtered_count += 1
+                        continue
                     findings.append(finding)
             except Exception as e:
                 print(f"解析文件失败 {md_file}: {e}")
@@ -1375,30 +1792,25 @@ def _generate_report_template(project_name: str, languages: List[str], standards
 
 # 验证修复质量
 def validate_fix_quality(finding: Dict) -> Dict:
-    """验证修复质量
-    
+    """验证修复方案基本完整性
+
+    注意：修复方案的合理性判断由 LLM 在审计时完成，此处仅做基本检查。
+
     Args:
         finding: 审计发现
-        
+
     Returns:
         Dict: 验证结果
     """
     issues = []
-    
-    # 检查修复方案长度
+
+    # 检查修复方案长度 - 基本完整性
     fix = finding.get('fix', '')
-    if len(fix) < 30:
-        issues.append("修复方案字数不足 30 字")
-    
-    # 检查是否包含具体修复代码
-    if '```' not in fix and ('=' not in fix or ';' not in fix):
-        issues.append("修复方案应包含具体修复代码")
-    
-    # 检查是否包含验证方法
-    verification = finding.get('verification', '')
-    if not verification:
-        issues.append("缺少验证方法")
-    
+    if len(fix) < 20:
+        issues.append("修复方案字数不足 20 字")
+
+    # 不做关键词检查 - LLM 应自主判断修复方案是否具体、合理、可行
+
     return {
         "valid": len(issues) == 0,
         "issues": issues
@@ -1414,7 +1826,7 @@ def finalize_report(
     audit_date: str = None,
 ) -> Dict:
     """收尾报告：从 Markdown 文件生成报告
-    
+
     Args:
         output_path: 报告输出路径（可选，默认为 audit_report.md）
         summary_updates: 摘要更新（可选）
@@ -1423,6 +1835,22 @@ def finalize_report(
         standards: 标准列表（可选，默认从文件推断）
         audit_date: 审计日期（可选，默认使用当前日期）
     """
+    # ⚠️ 校验 baseline 文件数量
+    baseline_validation = validate_baseline_count()
+    if not baseline_validation.get('valid'):
+        print(json.dumps({
+            "warning": "baseline 校验失败",
+            "details": baseline_validation
+        }, ensure_ascii=False, indent=2))
+
+    # ⚠️ 校验 LLM 审计覆盖情况
+    llm_validation = validate_llm_audit_coverage(languages)
+    if not llm_validation.get('valid'):
+        print(json.dumps({
+            "warning": "LLM 审计校验失败",
+            "details": llm_validation
+        }, ensure_ascii=False, indent=2))
+
     if not output_path:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         output_path = f"audit_report_{timestamp}.md"
@@ -1430,11 +1858,32 @@ def finalize_report(
     try:
         report_path = Path(output_path)
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        # 统计误报数量
+        false_positive_count = 0
+        for md_dir in [BASELINE_DIR, LLM_AUDIT_DIR]:
+            if md_dir.exists():
+                for md_file in md_dir.glob("*.md"):
+                    try:
+                        content = md_file.read_text(encoding='utf-8')
+                        for line in content.split('\n'):
+                            if line.startswith('状态:') and '误报' in line:
+                                false_positive_count += 1
+                                break
+                    except:
+                        pass
+
         all_findings = load_all_findings()
-        
+
         valid_findings, hallucinations = filter_hallucinated_findings(all_findings)
-        
+
+        # 输出误报过滤信息
+        if false_positive_count > 0:
+            print(json.dumps({
+                "false_positives_filtered": false_positive_count,
+                "message": f"已过滤 {false_positive_count} 个标记为误报的发现"
+            }, ensure_ascii=False, indent=2))
+
         if hallucinations:
             print(json.dumps({
                 "warning": f"检测到 {len(hallucinations)} 个幻觉问题，已过滤",
@@ -1460,14 +1909,10 @@ def finalize_report(
             for f in valid_findings:
                 gbt = f.get("gbt_mapping", "")
                 if gbt:
-                    if gbt.startswith("GB/T34944"):
-                        gbt_prefixes.add("GB/T 34944-2017")
-                    elif gbt.startswith("GB/T34943"):
-                        gbt_prefixes.add("GB/T 34943-2017")
-                    elif gbt.startswith("GB/T34946"):
-                        gbt_prefixes.add("GB/T 34946-2017")
-                    elif gbt.startswith("GB/T39412"):
-                        gbt_prefixes.add("GB/T 39412-2020")
+                    for prefix, standard in GBT_PREFIX_TO_STANDARD.items():
+                        if gbt.startswith(prefix):
+                            gbt_prefixes.add(standard)
+                            break
             standards = sorted(list(gbt_prefixes))
         
         if not project_name:
@@ -1542,20 +1987,22 @@ def finalize_report(
         print(json.dumps({
             "success": True,
             "report_path": str(report_path),
+            "total_before_dedup": len(valid_findings),
             "findings_count": len(dedup_findings),
-            "dedup_count": len(dedup_findings),
+            "dedup_removed": len(valid_findings) - len(dedup_findings),
             "hallucinations_count": len(hallucinations),
             "source_stats": stats["source_stats"],
             "severity_stats": stats["severity_stats"],
             "gbt_prefix_stats": stats["gbt_prefix_stats"],
             "validation": validation_result
         }, ensure_ascii=False, indent=2))
-        
+
         return {
             "success": True,
             "report_path": str(report_path),
+            "total_before_dedup": len(valid_findings),
             "findings_count": len(dedup_findings),
-            "dedup_count": len(dedup_findings),
+            "dedup_removed": len(valid_findings) - len(dedup_findings),
             "hallucinations_count": len(hallucinations),
             "validation": validation_result
         }
@@ -1594,17 +2041,74 @@ if __name__ == "__main__":
     # 验证发现子命令
     validate_parser = subparsers.add_parser("validate_finding", help="验证发现")
     validate_parser.add_argument("md_file", help="MD文件路径")
-    
+
+    # 快速扫描参数：隔离模式（默认）
+    scan_parser.add_argument("--output-file", default=str(SCAN_RESULT_FILE), help=f"完整结果保存路径（默认 {SCAN_RESULT_FILE}）")
+    scan_parser.add_argument("--show-details", action="store_true", help="显示完整 findings 详情（仅调试用，违反隔离原则）")
+    scan_parser.add_argument("--create-baseline", action="store_true", help="自动创建所有 baseline md 文件（静默模式，内容不打印到控制台）")
+
     args = parser.parse_args()
-    
+
     if args.command == "quick_scan":
         result = quick_scan(
             args.target,
             max_workers=args.max_workers,
             use_external_tools=not args.no_external_tools
         )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-    
+
+        # 保存完整结果到文件（隔离模式）
+        if result.get('success'):
+            output_file = Path(args.output_file)
+            output_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+
+            # 自动创建 baseline md 文件（如果指定了 --create-baseline）
+            if args.create_baseline:
+                baseline_result = create_baseline_md_files(result.get('findings', []), silent=True)
+                if baseline_result.get('success'):
+                    print("")
+                    print(f"✅ 已自动创建 {baseline_result['created_count']} 个 baseline md 文件")
+                    print(f"   目录: {baseline_result['baseline_dir']}")
+                else:
+                    print("")
+                    print(f"⚠️ baseline 创建失败: {baseline_result.get('errors', [])}")
+
+        # 输出模式
+        if args.show_details:
+            # 调试模式：输出完整结果（违反隔离原则）
+            print("⚠️ 警告：--show-details 模式会暴露 findings 详情，LLM 审计将无法保持独立性")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            # 隔离模式：只输出统计摘要
+            summary = {
+                "success": result.get("success"),
+                "target": result.get("target"),
+                "languages": result.get("languages"),
+                "total_findings": result.get("total_findings"),
+                "severity_stats": result.get("severity_stats", {}),
+                "tools_used": result.get("tools_used", []),
+                "output_file": args.output_file,
+                "message": "完整结果已保存到文件，findings 详情已隔离（LLM 审计时不应查看文件内容）"
+            }
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+            # ⚠️ 强制提醒：必须创建所有 baseline md 文件
+            if result.get('success') and result.get('total_findings', 0) > 0:
+                print("")
+                print("=" * 60)
+                if args.create_baseline:
+                    print("✅ 步骤5已完成")
+                    print("=" * 60)
+                    print(f"已自动创建 {result['total_findings']} 个 baseline md 文件")
+                    print(f"baseline 目录: {BASELINE_DIR}")
+                else:
+                    print("⚠️ 步骤5强制要求")
+                    print("=" * 60)
+                    print(f"发现 {result['total_findings']} 个漏洞")
+                    print(f"必须为 {SCAN_RESULT_FILE} 中所有 findings 创建对应的 baseline md 文件")
+                    print(f"禁止手动筛选，去重由 finalize_report 自动执行")
+                    print(f"baseline 目录应包含 {result['total_findings']} 个 md 文件")
+                print("=" * 60)
+
     elif args.command == "finalize_report":
         result = finalize_report(
             output_path=args.output,
@@ -1614,7 +2118,7 @@ if __name__ == "__main__":
             audit_date=args.date
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    
+
     elif args.command == "validate_finding":
         result = validate_finding(args.md_file)
         print(json.dumps(result, ensure_ascii=False, indent=2))

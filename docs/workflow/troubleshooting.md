@@ -25,7 +25,6 @@ language: java
 code_snippet: Runtime.getRuntime().exec(command);
 description: 描述内容
 fix: 修复内容
-verification: 验证内容
 ```
 
 **⚠️ 2026-04-18 更新**：`validate_finding` 函数已修复为同时支持中文冒号和英文冒号。但仍推荐使用英文冒号以保证最大兼容性。
@@ -63,19 +62,17 @@ sed -i 's/：/:/g' findings/*/*.md
 - 或报告生成在奇怪的目录下（如 `GB/T39412-2020/`）
 
 **原因**：
-- 使用空格分隔多值参数，导致多余参数被当作 positional argument
-- 例如 `--standards GB/T34943 GB/T34944 GB/T39412` 中，最后一个值被当作 `output_path`
+- 参数格式错误，导致 argparse 解析失败
+- 例如缺少参数名或格式不正确
 
 **解决方案**：
 ```bash
-# ✅ 正确：使用逗号分隔
-python skill.py finalize_report --standards=GB/T34943,GB/T34944,GB/T39412
-
-# ❌ 错误：空格分隔导致参数解析错误
+# ✅ 正确：使用空格分隔多值参数
 python skill.py finalize_report --standards GB/T34943 GB/T34944 GB/T39412
-```
 
-> 💡 **2026-04-21 更新**：已改进参数解析，使用空格分隔时会提示错误信息。
+# ❌ 错误：缺少参数名
+python skill.py finalize_report GB/T39412-2020
+```
 
 ---
 
