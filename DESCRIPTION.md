@@ -37,7 +37,6 @@ python skill.py finalize_report --output=audit_report.md --project=my-project --
 | 工具 | 说明 |
 |------|------|
 | `quick_scan` | 正则表达式模式匹配检测常见漏洞 |
-| `extract_code` | 获取指定文件和行号的真实代码片段 |
 | `validate_finding` | 验证 md 文件的代码片段是否真实存在 |
 | `finalize_report` | 去重 + 验证幻觉 + 生成报告 + 清空目录 |
 
@@ -55,4 +54,4 @@ python skill.py finalize_report --output=audit_report.md --project=my-project --
 
 ## 版本
 
-当前版本：2.0.0
+当前版本：2.1.0

@@ -126,7 +126,6 @@ python skill.py finalize_report --project=my-project --languages=java,cpp --stan
 | 工具 | 说明 | 命令行用法 |
 |------|------|----------|
 | `quick_scan` | 快速扫描：正则表达式模式匹配检测常见漏洞 | `python skill.py quick_scan --target=<path>` |
-| `extract_code` | 提取代码：获取指定文件和行号的真实代码片段 | `python skill.py extract_code <file_path> <line_number>` |
 | `validate_finding` | 验证发现：验证 md 文件的代码片段是否真实存在（防幻觉） | `python skill.py validate_finding <md_file_path>` |
 | `finalize_report` | 收尾报告：去重 + 验证幻觉 + 生成报告 | `python skill.py finalize_report --output=<path> --project=<name>` |
 
@@ -139,11 +138,10 @@ gbt-code-audit-skill/
 ├── README.md                # 项目说明
 ├── DESCRIPTION.md           # 技能描述
 ├── manifest.json            # 技能清单
-├── knowledge/               # 漏洞知识库
-│   └── vulnerabilities/     # 按漏洞类型组织的知识
-│       ├── sql_injection.md
-│       ├── command_injection.md
-│       └── ...
+├── docs/                    # 文档目录
+│   ├── workflow/            # 流程文档
+│   ├── reference/           # 国标规则和映射
+│   └── vulnerabilities/     # 漏洞知识库
 ├── test-samples/            # 测试样例
 │   ├── java/
 │   ├── python/
@@ -156,7 +154,7 @@ gbt-code-audit-skill/
 
 ## 版本
 
-当前版本：2.0.0
+当前版本：2.1.0
 
 ## 许可证
 

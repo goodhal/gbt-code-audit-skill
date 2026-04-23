@@ -41,22 +41,24 @@ env/
 *.swp
 *.swo
 *~
+.claude/
 .workbuddy/
 .trae/
 .ruff_cache/
 
-# 审计产物
+# 审计产物（运行时生成）
 findings/
 *.log
 test_report*.md
 unified_audit_report*.md
 audit_report*.md
-GBT_*.md
 scan_result.json
 scan_full.json
 spotbugs_result.json
 findings_backup*.zip
 GB/
+
+# 注意：docs/reference/GBT_*.md 是国标规则文件，应该被跟踪
 
 # 辅助脚本（审计过程临时生成）
 create_baseline.py
@@ -81,9 +83,6 @@ temp/
 # 系统文件
 .DS_Store
 Thumbs.db
-
-# 文档目录
-doc/
 
 # 测试脚本（可选）
 # test_spotbugs_validator.py

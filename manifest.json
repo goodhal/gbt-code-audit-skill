@@ -36,6 +36,20 @@
             }
         },
         {
+            "name": "validate_finding",
+            "description": "验证发现：验证 md 文件的代码片段是否真实存在（防幻觉）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "md_file": {
+                        "type": "string",
+                        "description": "md 文件路径"
+                    }
+                },
+                "required": ["md_file"]
+            }
+        },
+        {
             "name": "finalize_report",
             "description": "收尾报告：遍历 Markdown 文件去重并生成审计报告，自动清空 findings 目录",
             "parameters": {

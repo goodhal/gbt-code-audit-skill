@@ -1234,41 +1234,6 @@ def generate_summary_tables(stats: Dict) -> str:
     
     return "\n".join(summary_lines)
 
-def _get_severity_icon(severity: str) -> str:
-    """获取严重等级对应的图标
-    
-    Args:
-        severity: 严重等级
-        
-    Returns:
-        str: 图标
-    """
-    severity_icons = {
-        "严重": "🔴",
-        "高危": "🟠",
-        "中危": "🟡",
-        "低危": "🟢",
-    }
-    return severity_icons.get(severity, "⚪")
-
-def _get_source_icon(source: str) -> str:
-    """获取来源对应的图标
-    
-    Args:
-        source: 来源
-        
-    Returns:
-        str: 图标
-    """
-    source_icons = {
-        "quick_scan": "🔧 快速扫描",
-        "llm_audit": "🧠 LLM审计",
-        "bandit": "🔍 Bandit",
-        "semgrep": "🔍 Semgrep",
-        "gitleaks": "🔍 Gitleaks",
-    }
-    return source_icons.get(source, source)
-
 def _format_finding_to_markdown(finding: Dict, index: int) -> str:
     """将发现格式化为 Markdown（符合 SKILL.md 定义的格式）
     
