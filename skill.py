@@ -612,6 +612,7 @@ CWE: {cwe}
     if not silent:
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
+    return result
 
 
 def validate_llm_audit_coverage(languages: List[str] = None) -> Dict:
@@ -1519,8 +1520,12 @@ def compute_stats(findings: List[Dict]) -> Dict:
         # 统计国标映射
         gbt_mapping = finding.get("gbt_mapping", "")
         if gbt_mapping:
-            # 拆分多个国标映射，每个国标单独统计
-            gbt_rules = [rule.strip() for rule in gbt_mapping.split(';') if rule.strip()]
+            gbt_rules = []
+            for part in gbt_mapping.replace('；', ';').replace('，', ',').split(';'):
+                for subpart in part.split(','):
+                    subpart = subpart.strip()
+                    if subpart:
+                        gbt_rules.append(subpart)
             
             # 用于跟踪已统计的国标前缀，确保每个漏洞只在每个国标分类中统计一次
             counted_prefixes = set()
@@ -1610,7 +1615,12 @@ def generate_summary_tables(stats: Dict) -> str:
     for severity in severity_order:
         count = stats["severity_stats"].get(severity, 0)
         if count > 0:
-            llm_audit_count = stats["severity_source_stats"].get(f"{severity}:llm_audit", 0)
+            # 尝试多种可能的 llm_audit 来源键名（原始值和显示值）
+            llm_audit_count = (
+                stats["severity_source_stats"].get(f"{severity}:llm_audit", 0) +
+                stats["severity_source_stats"].get(f"{severity}:🧠 LLM审计", 0) +
+                stats["severity_source_stats"].get(f"{severity}:LLM审计", 0)
+            )
             # 快速扫描 = 该严重等级总数 - LLM审计数（包含bandit、quick_scan等所有baseline来源）
             quick_scan_count = count - llm_audit_count
             total_quick_scan += quick_scan_count
@@ -1668,7 +1678,7 @@ def _format_finding_to_markdown(finding: Dict, index: int) -> str:
     
     lines.append(f"### #{index} {severity_icon} {vuln_type}")
     lines.append("")
-    lines.append(f"**来源**: {source_display}")
+    lines.append(f"**来源**: {source}")
     lines.append(f"**严重性**: {severity}")
     lines.append(f"**文件**: {file_path}:{line_num}")
     lines.append("")
