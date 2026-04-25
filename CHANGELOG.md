@@ -2,6 +2,35 @@
 
 本文件记录项目的主要变更历史。
 
+## [2.4.1] - 2026-04-26
+
+### 代码重构
+
+- **脚本目录规范化**：将核心Python代码统一移动到 `scripts/` 目录
+  - `skill.py` → `scripts/skill.py`
+  - `constants.py` → `scripts/constants.py`
+  - `patterns.py` → `scripts/patterns.py`
+  - `validation.py` → `scripts/validation.py`
+- **删除冗余文件**：移除 `pyproject.toml` 和 `test_skill.py`
+- **新增验证模块**：`scripts/validation.py` 提供完整的审计结果验证功能
+  - 必填字段验证
+  - 国标映射格式验证
+  - 描述和修复方案格式验证
+  - 代码片段验证
+
+### 文档完善
+
+- **审计工作流程**：`docs/workflow/audit_workflow.md` 详细说明三层审计分工
+- **质量标准**：`docs/workflow/quality_standards.md` 定义审计质量判断标准
+- **故障排除**：`docs/workflow/troubleshooting.md` 提供常见问题解决方案
+- **项目文档优化**：更新 SKILL.md、CLAUDE.md、README.md
+
+### 项目结构优化
+
+- 目录结构清晰化：scripts/（代码）、docs/（文档）、test-samples/（测试）
+- .gitignore 配置完善：正确忽略运行时产物和临时文件
+- 配置文件规范化：确保Git跟踪必要文件，忽略生成文件
+
 ## [2.4.0] - 2026-04-24
 
 ### 代码重构
