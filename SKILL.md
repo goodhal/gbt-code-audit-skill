@@ -90,7 +90,7 @@ description: 基于中国国家标准（GB/T 34943/34944/34946/39412）的代码
 
 | 验证项 | 说明 | 工具函数 |
 |--------|------|---------|
-| **必填字段完整性** | 检查13个必填字段是否存在 | `validate_required_fields()` |
+| **必填字段完整性** | baseline检查12个字段，LLM审计检查13个字段（含修复方案） | `validate_required_fields()` + `LLM_REQUIRED_FIELDS` |
 | **国标映射格式** | 检查国标映射格式是否正确 | `validate_gbt_mapping()` |
 | **代码片段/行号** | 验证代码片段和行号准确性，含自动修正 | `validate_code_snippet()` |
 | **问题描述格式** | 检查字数≥20，不重复代码片段 | `validate_description_format()` |
