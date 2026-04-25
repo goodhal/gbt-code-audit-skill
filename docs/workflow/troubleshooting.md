@@ -8,26 +8,25 @@
 
 **原因**：
 - md 文件使用了中文冒号 `：` (Unicode 0xff1a) 而不是英文冒号 `:` (ASCII 0x3a)
-- `parse_finding_md` 和 `validate_finding` 函数需要正确解析键值对
+- `parse_finding_md` 函数需要正确解析键值对
 
 **解决方案**：
 
 **✅ 推荐格式**（英文键名 + 英文冒号，兼容性最好）：
 ```markdown
-id: #001
-severity: 严重
-file: test-samples/java/VulnerableJava.java
-line: 31
-cwe: CWE-78
-gbt_mapping: GB/T34944-6.2.3.3 命令注入
-source: quick_scan
-language: java
-code_snippet: Runtime.getRuntime().exec(command);
-description: 描述内容
-fix: 修复内容
+编号: #001
+严重等级: 严重
+漏洞类型: COMMAND_INJECTION
+文件路径: test-samples/java/VulnerableJava.java
+行号: 31
+CWE: CWE-78
+国标映射: GB/T34944-6.2.3.3 命令注入
+来源: quick_scan
+语言: java
+状态: 误报
+问题代码: Runtime.getRuntime().exec(command);
+问题描述: 描述内容
 ```
-
-**⚠️ 2026-04-18 更新**：`validate_finding` 函数已修复为同时支持中文冒号和英文冒号。但仍推荐使用英文冒号以保证最大兼容性。
 
 **批量修复命令**（如果验证失败）：
 ```bash
@@ -68,10 +67,10 @@ sed -i 's/：/:/g' findings/*/*.md
 **解决方案**：
 ```bash
 # ✅ 正确：使用空格分隔多值参数
-python skill.py finalize_report --standards GB/T34943 GB/T34944 GB/T39412
+python scripts/skill.py finalize_report --standards GB/T34943 GB/T34944 GB/T39412
 
 # ❌ 错误：缺少参数名
-python skill.py finalize_report GB/T39412-2020
+python scripts/skill.py finalize_report GB/T39412-2020
 ```
 
 ---
@@ -90,10 +89,10 @@ python skill.py finalize_report GB/T39412-2020
 **解决方案**：
 ```bash
 # ✅ 正确：使用英文文件名
-python skill.py finalize_report --output=audit_report.md --project=test-project
+python scripts/skill.py finalize_report --output=audit_report.md --project=test-project
 
 # ❌ 错误：空格导致参数解析错误
-python skill.py finalize_report --output=审计报告_最终版.md --project=gbt-code-audit-skill 测试样例
+python scripts/skill.py finalize_report --output=审计报告_最终版.md --project=gbt-code-audit-skill 测试样例
 ```
 
 ---
@@ -130,7 +129,7 @@ python skill.py finalize_report --output=审计报告_最终版.md --project=gbt
 1. 删除旧报告文件，重新生成：
    ```bash
    rm -f audit_report*.md 审计报告*.md
-   python skill.py finalize_report --output=新报告.md
+   python scripts/skill.py finalize_report --output=新报告.md
    ```
 2. 检查 md 文件格式是否正确（使用英文冒号）
 3. 确认 `load_all_findings()` 能正确解析 md 文件

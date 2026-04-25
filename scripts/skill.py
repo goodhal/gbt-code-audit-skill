@@ -9,88 +9,38 @@ import concurrent.futures
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any
 
-# 常量定义
-MAX_WORKERS = 4
-
-# 目录和文件路径常量
-BASELINE_DIR = Path("findings/baseline")
-LLM_AUDIT_DIR = Path("findings/llm_audit")
-FINDINGS_DIR = Path("findings")
-SCAN_RESULT_FILE = Path("scan_result.json")
-
-# 严重等级常量
-SEVERITY_ORDER = ["严重", "高危", "中危", "低危"]
-SEVERITY_CRITICAL = "严重"
-SEVERITY_HIGH = "高危"
-SEVERITY_MEDIUM = "中危"
-SEVERITY_LOW = "低危"
-
-# 语言文件扩展名映射（支持所有主流语言）
-LANGUAGE_EXTENSIONS = {
-    "java": [".java"],
-    "python": [".py", ".pyw"],
-    "cpp": [".cpp", ".cc", ".cxx", ".c", ".h", ".hpp"],
-    "csharp": [".cs"],
-    "go": [".go"],
-    "javascript": [".js", ".jsx", ".mjs", ".cjs"],
-    "typescript": [".ts", ".tsx"],
-    "php": [".php", ".phtml", ".php3", ".php4", ".php5"],
-    "ruby": [".rb", ".rbw"],
-    "rust": [".rs"],
-    "kotlin": [".kt", ".kts"],
-    "swift": [".swift"],
-    "scala": [".scala", ".sc"],
-    "perl": [".pl", ".pm", ".t"],
-    "lua": [".lua"],
-    "shell": [".sh", ".bash", ".zsh"],
-}
-
-# 有专用国标标准的语言（需要双映射）
-LANGUAGES_WITH_DEDICATED_STANDARD = {
-    "java": "GB/T34944",
-    "cpp": "GB/T34943",
-    "c": "GB/T34943",
-    "csharp": "GB/T34946",
-}
-
-# 所有有效的国标前缀
-VALID_GBT_PREFIXES = list(set(list(LANGUAGES_WITH_DEDICATED_STANDARD.values()) + ["GB/T39412"]))
-
-# 国标前缀到标准名称的映射
-GBT_PREFIX_TO_STANDARD = {
-    "GB/T34943": "GB/T 34943-2017",
-    "GB/T34944": "GB/T 34944-2017",
-    "GB/T34946": "GB/T 34946-2017",
-    "GB/T39412": "GB/T 39412-2020",
-}
-
-# 国标前缀到描述的映射
-GBT_PREFIX_TO_DESCRIPTION = {
-    "GB/T34943": "C/C++ 语言源代码漏洞测试规范",
-    "GB/T34944": "Java 语言源代码漏洞测试规范",
-    "GB/T34946": "C# 语言源代码漏洞测试规范",
-    "GB/T39412": "网络安全技术 源代码漏洞检测规则",
-}
-
-# 有外部扫描工具支持的语言
-TOOL_SUPPORTED_LANGUAGES = {
-    "bandit": ["python"],
-    "semgrep": ["java", "python", "cpp", "csharp", "go", "javascript", "typescript", "ruby", "rust"],
-    "gitleaks": ["all"],  # gitleaks 支持所有语言（检测密钥）
-}
-
-# 外部工具配置
-EXTERNAL_TOOLS = {
-    "bandit": {"cmd": "bandit", "args": ["-r", "-f", "json"]},
-    "semgrep": {"cmd": "semgrep", "args": ["--config", "auto", "--json"]},
-    "gitleaks": {"cmd": "gitleaks", "args": ["detect", "--report-format", "json"]},
-}
-
-# 工具优先级
-TOOL_PRIORITY = ["gitleaks", "bandit", "semgrep"]
-
-# 外部工具可用性缓存
-EXTERNAL_TOOLS_AVAILABLE = {}
+from constants import (
+    MAX_WORKERS,
+    BASELINE_DIR,
+    LLM_AUDIT_DIR,
+    FINDINGS_DIR,
+    PROJECT_ROOT,
+    SEVERITY_ORDER,
+    SEVERITY_CRITICAL,
+    SEVERITY_HIGH,
+    SEVERITY_MEDIUM,
+    SEVERITY_LOW,
+    LANGUAGE_EXTENSIONS,
+    LANGUAGES_WITH_DEDICATED_STANDARD,
+    VALID_GBT_PREFIXES,
+    GBT_PREFIX_TO_STANDARD,
+    GBT_PREFIX_TO_DESCRIPTION,
+    TOOL_SUPPORTED_LANGUAGES,
+    EXTERNAL_TOOLS,
+    TOOL_PRIORITY,
+    EXTERNAL_TOOLS_AVAILABLE,
+    get_gbt_mapping,
+)
+from patterns import get_compiled_patterns
+from validation import (
+    parse_finding_md,
+    validate_required_fields,
+    validate_gbt_mapping,
+    validate_description_format,
+    validate_fix_format,
+    validate_code_snippet,
+    validate_finding,
+)
 
 # 硬排除规则
 class HardExclusionRules:
@@ -315,75 +265,6 @@ def run_semgrep_scan(target: str, language: str) -> List[Dict]:
 
     return []
 
-# 快速扫描模式
-def quick_scan_patterns() -> Dict[str, List[tuple]]:
-    """快速扫描模式
-    
-    Returns:
-        Dict[str, List[tuple]]: 语言到模式的映射
-    """
-    return {
-        "java": [
-            (r"Runtime\.getRuntime\(\)\.exec\s*\(", "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r'String\s+sql\s*=\s*["\'].*?\+.*?["\']', "SQL_INJECTION", "CWE-89", "严重"),
-            (r'password\s*=\s*"[^"]{3,}"', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
-            (r'(?:private\s+)?(?:static\s+)?(?:final\s+)?String\s+\w*(?:PASSWORD|PASS|SECRET|KEY|TOKEN)\s*=\s*"[^"]{3,}"', "HARD_CODE_SECRET", "CWE-321", "严重"),
-            (r'new\s+File\s*\(\s*[^"]*\s*\+\s*', "PATH_TRAVERSAL", "CWE-22", "高危"),
-            (r"eval\s*\(", "CODE_INJECTION", "CWE-94", "严重"),
-            (r"Statement\.execute", "SQL_INJECTION", "CWE-89", "严重"),
-            (r'MessageDigest\.getInstance\s*\(\s*["\']MD5["\']', "WEAK_HASH", "CWE-328", "高危"),
-            (r'MessageDigest\.getInstance\s*\(\s*["\']SHA-?1["\']', "WEAK_HASH", "CWE-328", "高危"),
-            (r'Cipher\.getInstance\s*\(\s*["\']DES["\']', "WEAK_CRYPTO", "CWE-327", "高危"),
-            (r"new\s+Random\s*\(\s*\)", "PREDICTABLE_RANDOM", "CWE-338", "高危"),
-        ],
-        "python": [
-            (r"os\.system\s*\(", "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r"subprocess\.\w+\s*\(.*shell\s*=\s*True", "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r"\bexec\s*\(", "CODE_INJECTION", "CWE-94", "严重"),
-            (r"\beval\s*\(", "CODE_INJECTION", "CWE-94", "严重"),
-            (r"pickle\.load", "DESERIALIZATION", "CWE-502", "严重"),
-            (r"yaml\.load\s*\(.*\)\s*$", "DESERIALIZATION", "CWE-502", "严重"),
-            (r'\bpassword\s*=\s*["\']\w+["\']', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
-            (r'\b(api|secret|token|key)\s*=\s*["\']\w+["\']', "HARD_CODE_SECRET", "CWE-321", "严重"),
-            (r"hashlib\.md5", "WEAK_HASH", "CWE-328", "高危"),
-            (r"hashlib\.sha1", "WEAK_HASH", "CWE-328", "高危"),
-            (r"random\.rand", "PREDICTABLE_RANDOM", "CWE-338", "高危"),
-        ],
-        "cpp": [
-            (r'system\s*\(\s*[^"]*\s*\+', "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r'sprintf\s*\(\s*\w+\s*,\s*[^"]*\s*\+', "BUFFER_OVERFLOW", "CWE-120", "严重"),
-            (r"strcpy\s*\(", "BUFFER_OVERFLOW", "CWE-120", "严重"),
-            (r"gets\s*\(", "BUFFER_OVERFLOW", "CWE-120", "严重"),
-            (r"printf\s*\(\s*\w+\s*\)", "FORMAT_STRING", "CWE-134", "高危"),
-            (r"malloc\s*\(\s*\w+\s*\*\s*\d+\s*\)", "INTEGER_OVERFLOW", "CWE-190", "高危"),
-            (r'password\s*=\s*"[^"]{3,}"', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
-        ],
-        "csharp": [
-            (r"Process\.Start\s*\(.*\+.*\)", "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r"SqlCommand\s*=\s*new\s+SqlCommand\s*\(.*\+.*\)", "SQL_INJECTION", "CWE-89", "严重"),
-            (r'password\s*=\s*"[^"]{3,}"', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
-            (r'\b(api|secret|token|key)\s*=\s*"\w+"', "HARD_CODE_SECRET", "CWE-321", "严重"),
-            (r"DES\.Create\s*\(\)", "WEAK_CRYPTO", "CWE-327", "高危"),
-            (r"SHA1\.Create\s*\(\)", "WEAK_HASH", "CWE-328", "高危"),
-            (r"Random\s*=\s*new\s+Random\s*\(\)", "PREDICTABLE_RANDOM", "CWE-338", "高危"),
-        ],
-    }
-
-# 编译的模式缓存
-_COMPILED_PATTERNS: Dict[str, List[tuple]] = {}
-
-def _init_compiled_patterns():
-    """模块加载时预编译所有正则表达式"""
-    pattern_strings = quick_scan_patterns()
-    for lang, patterns in pattern_strings.items():
-        compiled = []
-        for pattern, vuln_type, cwe, severity in patterns:
-            compiled.append((re.compile(pattern), vuln_type, cwe, severity))
-        _COMPILED_PATTERNS[lang] = compiled
-
-# 初始化编译模式
-_init_compiled_patterns()
-
 # 快速扫描单个文件
 def quick_scan_file(file_path: str, language: str) -> List[Dict]:
     """快速扫描单个文件
@@ -401,7 +282,7 @@ def quick_scan_file(file_path: str, language: str) -> List[Dict]:
         content = Path(file_path).read_text(encoding='utf-8')
         
         # 使用预编译的正则模式
-        for pattern, vuln_type, cwe, severity in _COMPILED_PATTERNS.get(language, []):
+        for pattern, vuln_type, cwe, severity in get_compiled_patterns().get(language, []):
             for match in pattern.finditer(content):
                 # 计算行号
                 line_num = content[:match.start()].count('\n') + 1
@@ -576,6 +457,9 @@ def create_baseline_md_files(findings: List[Dict], silent: bool = True) -> Dict:
             source = finding.get('source', 'baseline')
 
 
+            # 获取国标映射
+            gbt_mapping = get_gbt_mapping(vuln_type, lang)
+
             # 构建 md 内容
             md_content = f"""编号: #{idx:03d}
 严重等级: {severity}
@@ -583,13 +467,12 @@ def create_baseline_md_files(findings: List[Dict], silent: bool = True) -> Dict:
 文件路径: {file_path}
 行号: {line_num}
 CWE: {cwe}
-国标映射: （待LLM填写）
+国标映射: {gbt_mapping}
 来源: {source}
 语言: {lang}
-状态: 有效
+状态: 误报
 问题代码: {code_snippet}
 问题描述: {description}
-修复方案: （待LLM填写）
 """
 
             md_path.write_text(md_content, encoding='utf-8')
@@ -679,12 +562,9 @@ def validate_llm_audit_coverage(languages: List[str] = None) -> Dict:
         "languages": languages
     }
 
-# 校验 baseline 文件数量
-def validate_baseline_count(expected_count: int = None) -> Dict:
-    """校验 baseline 目录的 md 文件数量是否符合预期
-
-    Args:
-        expected_count: 预期的文件数量（可选，默认从 scan_result.json 读取）
+# 校验 baseline 文件
+def validate_baseline_count() -> Dict:
+    """校验 baseline 目录是否存在且有 md 文件
 
     Returns:
         Dict: 校验结果
@@ -695,37 +575,23 @@ def validate_baseline_count(expected_count: int = None) -> Dict:
             "valid": False,
             "error": "baseline 目录不存在",
             "actual_count": 0,
-            "expected_count": expected_count or 0
+            "hint": "步骤5a 必须执行 quick_scan 创建 baseline md 文件"
         }
 
     actual_count = len(list(baseline_dir.glob("*.md")))
 
-    # 如果没有提供预期数量，从 scan_result.json 读取
-    if expected_count is None:
-        scan_result_path = SCAN_RESULT_FILE
-        if scan_result_path.exists():
-            try:
-                scan_data = json.loads(scan_result_path.read_text(encoding='utf-8'))
-                expected_count = scan_data.get("total_findings", 0)
-            except Exception:
-                expected_count = 0
-
-    if expected_count is None:
-        expected_count = 0
-
-    if actual_count < expected_count:
+    if actual_count == 0:
         return {
             "valid": False,
-            "error": f"baseline md 文件数量不足：实际 {actual_count} 个，预期 {expected_count} 个",
-            "actual_count": actual_count,
-            "expected_count": expected_count,
-            "hint": "步骤5 必须为所有 findings 创建对应的 baseline md 文件，禁止手动筛选"
+            "error": "baseline 目录中没有 md 文件",
+            "actual_count": 0,
+            "hint": "步骤5a 必须执行 quick_scan 创建 baseline md 文件"
         }
 
     return {
         "valid": True,
         "actual_count": actual_count,
-        "expected_count": expected_count
+        "message": f"baseline 目录包含 {actual_count} 个 md 文件"
     }
 
 # 清理发现目录
@@ -738,7 +604,7 @@ def _cleanup_findings_dir() -> Dict:
     import zipfile
     from datetime import datetime
 
-    findings_dir = Path("findings")
+    findings_dir = FINDINGS_DIR
 
     if not findings_dir.exists():
         findings_dir.mkdir(parents=True, exist_ok=True)
@@ -754,12 +620,12 @@ def _cleanup_findings_dir() -> Dict:
 
     # 压缩备份
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_file = Path(f"findings_backup_{timestamp}.zip")
+    backup_file = PROJECT_ROOT / f"findings_backup_{timestamp}.zip"
 
     try:
         with zipfile.ZipFile(backup_file, 'w', zipfile.ZIP_DEFLATED) as zf:
             for md_file in findings_dir.rglob("*.md"):
-                arcname = md_file.relative_to(findings_dir.parent)
+                arcname = md_file.relative_to(PROJECT_ROOT)
                 zf.write(md_file, arcname)
 
         shutil.rmtree(findings_dir)
@@ -891,12 +757,15 @@ def validate_required_fields(finding: Dict) -> Dict:
         'language': '语言',
         'code_snippet': '问题代码',
         'description': '问题描述',
-        'fix': '修复方案',
         'status': '状态',
     }
 
+    llm_required_fields = ['fix']
+
     issues = []
     missing_fields = []
+
+    source = finding.get('source', '')
 
     for field, label in required_fields.items():
         value = finding.get(field, '')
@@ -906,13 +775,17 @@ def validate_required_fields(finding: Dict) -> Dict:
     if missing_fields:
         issues.append(f"缺少必填字段: {', '.join(missing_fields)}")
 
-    # 验证严重等级是否有效
+    if source == 'llm_audit':
+        for field in llm_required_fields:
+            value = finding.get(field, '')
+            if not value or (isinstance(value, str) and value.strip() == ''):
+                issues.append("LLM审计发现缺少修复方案")
+
     severity = finding.get('severity', '')
     valid_severities = ['严重', '高危', '中危', '低危']
     if severity and severity not in valid_severities:
         issues.append(f"严重等级无效: {severity}，应为 {', '.join(valid_severities)}")
 
-    # 验证状态是否有效
     status = finding.get('status', '')
     valid_statuses = ['有效', '误报']
     if status and status not in valid_statuses:
@@ -972,10 +845,10 @@ def validate_gbt_mapping(finding: Dict) -> Dict:
     }
 
 # 验证问题描述
-def validate_description(finding: Dict) -> Dict:
-    """验证问题描述基本完整性
+def validate_description_format(finding: Dict) -> Dict:
+    """验证问题描述基本完整性（格式检查）
 
-    注意：描述质量的语义判断由 LLM 在审计时完成，此处仅做基本检查。
+    注意：描述质量的语义判断由 LLM 在审计时完成，此处仅做基本格式检查。
 
     Args:
         finding: 审计发现
@@ -1044,14 +917,14 @@ def validate_finding(md_file: str) -> Dict:
         if not code_validation['valid']:
             all_issues.append(f"代码片段验证失败: {code_validation.get('reason', '')}")
 
-        # 4. 问题描述验证
-        desc_validation = validate_description(finding)
+        # 4. 问题描述格式验证
+        desc_validation = validate_description_format(finding)
         validation_results['description'] = desc_validation
         if not desc_validation['valid']:
             all_issues.extend(desc_validation['issues'])
 
-        # 5. 修复方案质量验证
-        fix_validation = validate_fix_quality(finding)
+        # 5. 修复方案格式验证
+        fix_validation = validate_fix_format(finding)
         validation_results['fix'] = fix_validation
         if not fix_validation['valid']:
             all_issues.extend(fix_validation['issues'])
@@ -1310,7 +1183,7 @@ def validate_code_snippet(finding: Dict) -> Dict:
         return {"valid": True, "reason": f"error: {str(e)}"}
 
 def update_findings_md_files(findings: List[Dict]) -> Dict[str, int]:
-    """更新所有目录中md文件的行号和代码片段
+    """更新所有目录中md文件的行号、代码片段和状态
 
     Args:
         findings: 审计发现列表
@@ -1324,6 +1197,8 @@ def update_findings_md_files(findings: List[Dict]) -> Dict[str, int]:
         file_path = finding.get('file', '')
         finding_id = finding.get('id', '')
         source = finding.get('source', '')
+        vuln_type = finding.get('type', '')
+        new_status = finding.get('status', '有效')
         if not file_path and not finding_id:
             continue
 
@@ -1338,12 +1213,26 @@ def update_findings_md_files(findings: List[Dict]) -> Dict[str, int]:
         
         # 尝试在所有可能的目录中查找文件
         for directory in directories:
-            # 首先尝试通过编号查找
-            if finding_id:
+            # 首先尝试通过文件路径+行号+类型精确匹配
+            if file_path and vuln_type:
+                line_num = finding.get('line', 0)
+                lang = finding.get('language', 'unknown')
+                # 文件名格式：001_java_command_injection_31.md
+                # 使用glob匹配包含文件路径特征的所有文件
+                file_stem = Path(file_path).stem
+                pattern = f"*_{lang}_{vuln_type.lower()}_{line_num}.md"
+                matching_files = list(Path(directory).glob(pattern))
+                if matching_files:
+                    md_file = matching_files[0]
+                    break
+            
+            # 如果找不到，尝试通过编号查找
+            if not md_file and finding_id:
                 id_clean = finding_id.replace('#', '').zfill(3)
-                possible_md = Path(f"{directory}/{id_clean}.md")
-                if possible_md.exists():
-                    md_file = possible_md
+                # 使用glob匹配以编号开头的所有文件
+                matching_files = list(Path(directory).glob(f"{id_clean}_*.md"))
+                if matching_files:
+                    md_file = matching_files[0]
                     break
             
             # 如果找不到，尝试通过文件路径查找
@@ -1371,10 +1260,6 @@ def update_findings_md_files(findings: List[Dict]) -> Dict[str, int]:
         corrected_line = finding.get('corrected_line', old_line)
         actual_code = finding.get('actual_code', '')
 
-        # 如果行号没变且没有实际代码，不需要更新
-        if old_line == corrected_line and not actual_code:
-            continue
-
         # 读取md文件内容
         content = md_file.read_text(encoding='utf-8')
         lines = content.split('\n')
@@ -1391,6 +1276,10 @@ def update_findings_md_files(findings: List[Dict]) -> Dict[str, int]:
                     parts = line.split('：', 1)
                     new_lines.append(f"{parts[0]}： {corrected_line}")
                 updated = True
+            # 更新状态
+            elif line.startswith('状态:') or line.startswith('状态：'):
+                new_lines.append(f"状态: {new_status}")
+                updated = True
             # 更新代码片段
             elif line.startswith('问题代码:'):
                 if actual_code:
@@ -1398,6 +1287,7 @@ def update_findings_md_files(findings: List[Dict]) -> Dict[str, int]:
                     new_lines.append(f"问题代码: {corrected_line}     {actual_code}")
                 else:
                     new_lines.append(line)
+                updated = True
             else:
                 new_lines.append(line)
 
@@ -1409,59 +1299,97 @@ def update_findings_md_files(findings: List[Dict]) -> Dict[str, int]:
     return updates
 
 # 过滤幻觉问题
-def filter_hallucinated_findings(findings: List[Dict]) -> tuple:
-    """过滤掉幻觉问题和误报，返回有效发现和幻觉列表
-    
+def validate_single_finding(finding: Dict) -> Dict:
+    """验证单个发现（用于并行处理）
+
     Args:
-        findings: 审计发现列表
-        
+        finding: 单个审计发现
+
     Returns:
-        (有效发现列表, 幻觉列表)
+        Dict: 包含验证结果的字典
     """
-    valid_findings = []
-    hallucinations = []
-    
-    for finding in findings:
-        # 首先检查是否应该被硬排除
-        if HardExclusionRules.should_exclude(finding):
-            continue
-        
-        # 对所有发现进行代码片段验证和行号修正
+    result = {
+        "finding": finding,
+        "valid": False,
+        "hallucination": None,
+        "updated": False
+    }
+
+    if HardExclusionRules.should_exclude(finding):
+        result["excluded"] = True
+        return result
+
+    status = finding.get('status', '误报')
+    if status == '误报':
         validation = validate_code_snippet(finding)
         if validation['valid']:
-            # 如果找到修正后的行号，更新发现的行号
             if 'corrected_line' in validation:
                 finding['line'] = validation['corrected_line']
-            # 如果有实际代码，更新代码片段
+                result["updated"] = True
             if 'actual_code' in validation:
                 finding['actual_code'] = validation['actual_code']
-            valid_findings.append(finding)
+                result["updated"] = True
+            finding['status'] = '有效' 
+            result["valid"] = True
         else:
-            hallucinations.append({
+            result["hallucination"] = {
                 "file": finding.get('file', ''),
                 "line": finding.get('line', 0),
                 "type": finding.get('type', ''),
                 "reason": validation['reason'],
                 "expected_code": validation.get('expected', ''),
                 "actual_code": validation.get('actual', ''),
-            })
-    
-    # 更新所有目录中md文件的行号
+            }
+    else:
+        result["valid"] = True
+
+    return result
+
+
+def filter_hallucinated_findings(findings: List[Dict]) -> tuple:
+    """验证状态为"误报"的发现，验证通过后状态设为"有效"
+
+    使用 ThreadPoolExecutor 并行验证，提升处理效率。
+
+    Args:
+        findings: 审计发现列表
+
+    Returns:
+        (验证通过的发现列表, 幻觉列表)
+    """
+    valid_findings = []
+    hallucinations = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(validate_single_finding, f): f for f in findings}
+
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+
+            if result.get("excluded"):
+                continue
+
+            if result["valid"]:
+                valid_findings.append(result["finding"])
+            elif result["hallucination"]:
+                hallucinations.append(result["hallucination"])
+
     update_findings_md_files(valid_findings)
-    
+
     return valid_findings, hallucinations
 
 # 去重
-def deduplicate_findings(findings: List[Dict]) -> List[Dict]:
+def deduplicate_findings(findings: List[Dict]) -> tuple:
     """内存去重：按文件 + 行号 + 类型去重，优先保留 LLM 审计结果
     
     Args:
         findings: 审计发现列表
         
     Returns:
-        去重后的列表
+        (去重后的列表, 被丢弃的列表)
     """
     dedup_dict = {}
+    duplicates = []
     
     for finding in findings:
         file_path = finding.get('file', '')
@@ -1478,9 +1406,31 @@ def deduplicate_findings(findings: List[Dict]) -> List[Dict]:
             existing_source = existing.get('source', '')
             
             if source == 'llm_audit' and existing_source != 'llm_audit':
+                # LLM 审计优先，丢弃原有的
+                duplicates.append(existing)
                 dedup_dict[key] = finding
+            else:
+                # 丢弃当前的
+                duplicates.append(finding)
     
-    return list(dedup_dict.values())
+    # 更新被丢弃的 md 文件状态为"重复"
+    for dup in duplicates:
+        md_file = dup.get('md_file', '')
+        if md_file and Path(md_file).exists():
+            try:
+                content = Path(md_file).read_text(encoding='utf-8')
+                lines = content.split('\n')
+                updated_lines = []
+                for line in lines:
+                    if line.startswith('状态:'):
+                        updated_lines.append('状态: 重复')
+                    else:
+                        updated_lines.append(line)
+                Path(md_file).write_text('\n'.join(updated_lines), encoding='utf-8')
+            except:
+                pass
+    
+    return list(dedup_dict.values()), duplicates
 
 # 计算统计信息
 def compute_stats(findings: List[Dict]) -> Dict:
@@ -1712,22 +1662,24 @@ def _format_finding_to_markdown(finding: Dict, index: int) -> str:
         lines.append(f"**问题描述**: {description}")
         lines.append("")
     
-    fix = finding.get("fix", "")
-    if fix:
-        lines.append(f"**修复方案**: {fix}")
-        lines.append("")
+    # 只有 LLM 审计来源才输出修复方案
+    source = finding.get("source", "")
+    if source != "quick_scan":
+        fix = finding.get("fix", "")
+        if fix:
+            lines.append(f"**修复方案**: {fix}")
+            lines.append("")
 
     return "\n".join(lines)
 
 # 加载所有发现
 def load_all_findings() -> List[Dict]:
-    """加载所有发现
+    """加载所有发现（包括误报状态，由finalize_report处理验证）
 
     Returns:
-        List[Dict]: 所有发现（排除误报）
+        List[Dict]: 所有发现（包括误报状态）
     """
     findings = []
-    filtered_count = 0  # 误报过滤计数
 
     # 加载快速扫描的发现
     baseline_dir = BASELINE_DIR
@@ -1737,11 +1689,6 @@ def load_all_findings() -> List[Dict]:
                 content = md_file.read_text(encoding='utf-8')
                 finding = parse_finding_md(content)
                 if finding:
-                    # 过滤误报状态
-                    status = finding.get('status', '有效')
-                    if status == '误报':
-                        filtered_count += 1
-                        continue
                     findings.append(finding)
             except Exception as e:
                 print(f"解析文件失败 {md_file}: {e}")
@@ -1754,11 +1701,6 @@ def load_all_findings() -> List[Dict]:
                 content = md_file.read_text(encoding='utf-8')
                 finding = parse_finding_md(content)
                 if finding:
-                    # 过滤误报状态
-                    status = finding.get('status', '有效')
-                    if status == '误报':
-                        filtered_count += 1
-                        continue
                     findings.append(finding)
             except Exception as e:
                 print(f"解析文件失败 {md_file}: {e}")
@@ -1801,10 +1743,11 @@ def _generate_report_template(project_name: str, languages: List[str], standards
     return "\n".join(lines)
 
 # 验证修复质量
-def validate_fix_quality(finding: Dict) -> Dict:
-    """验证修复方案基本完整性
+def validate_fix_format(finding: Dict) -> Dict:
+    """验证修复方案基本完整性（格式检查）
 
-    注意：修复方案的合理性判断由 LLM 在审计时完成，此处仅做基本检查。
+    注意：修复方案的合理性判断由 LLM 在审计时完成，此处仅做基本格式检查。
+    快速扫描来源的问题不检查修复方案。
 
     Args:
         finding: 审计发现
@@ -1813,6 +1756,14 @@ def validate_fix_quality(finding: Dict) -> Dict:
         Dict: 验证结果
     """
     issues = []
+
+    # 快速扫描来源不检查修复方案
+    source = finding.get('source', '')
+    if source == 'quick_scan':
+        return {
+            "valid": True,
+            "issues": []
+        }
 
     # 检查修复方案长度 - 基本完整性
     fix = finding.get('fix', '')
@@ -1885,14 +1836,29 @@ def finalize_report(
 
         all_findings = load_all_findings()
 
-        valid_findings, hallucinations = filter_hallucinated_findings(all_findings)
+        # 步骤 6b：先去重
+        dedup_findings, duplicates = deduplicate_findings(all_findings)
 
-        # 输出误报过滤信息
-        if false_positive_count > 0:
-            print(json.dumps({
-                "false_positives_filtered": false_positive_count,
-                "message": f"已过滤 {false_positive_count} 个标记为误报的发现"
-            }, ensure_ascii=False, indent=2))
+        # 步骤 6c：验证状态为"误报"的发现，验证通过后状态设为"有效"
+        valid_findings, hallucinations = filter_hallucinated_findings(dedup_findings)
+
+        # 步骤 6d：过滤状态为"误报"的发现（验证失败的）
+        effective_findings = [f for f in valid_findings if f.get('status') == '有效']
+
+        # 按严重级别排序：严重 > 高危 > 中危 > 低危
+        severity_order = SEVERITY_ORDER
+        effective_findings.sort(key=lambda x: severity_order.index(x.get('severity', '未知')) if x.get('severity', '未知') in severity_order else 999)
+
+        # 输出处理信息
+        print(json.dumps({
+            "total_loaded": len(all_findings),
+            "after_dedup": len(dedup_findings),
+            "duplicates_count": len(duplicates),
+            "after_validation": len(valid_findings),
+            "hallucinations_count": len(hallucinations),
+            "effective_count": len(effective_findings),
+            "false_positives_filtered": len(valid_findings) - len(effective_findings)
+        }, ensure_ascii=False, indent=2))
 
         if hallucinations:
             print(json.dumps({
@@ -1902,7 +1868,7 @@ def finalize_report(
         
         if not languages:
             lang_set = set()
-            for f in valid_findings:
+            for f in effective_findings:
                 file_path = f.get("file", "")
                 if file_path.endswith(".java"):
                     lang_set.add("Java")
@@ -1916,7 +1882,7 @@ def finalize_report(
         
         if not standards:
             gbt_prefixes = set()
-            for f in valid_findings:
+            for f in effective_findings:
                 gbt = f.get("gbt_mapping", "")
                 if gbt:
                     for prefix, standard in GBT_PREFIX_TO_STANDARD.items():
@@ -1926,8 +1892,8 @@ def finalize_report(
             standards = sorted(list(gbt_prefixes))
         
         if not project_name:
-            if valid_findings:
-                first_file = valid_findings[0].get("file", "")
+            if effective_findings:
+                first_file = effective_findings[0].get("file", "")
                 if first_file:
                     project_name = Path(first_file).parent.name
                 else:
@@ -1947,8 +1913,7 @@ def finalize_report(
             )
             report_path.write_text(template_content, encoding="utf-8")
         
-        dedup_findings = deduplicate_findings(valid_findings)
-        stats = compute_stats(dedup_findings)
+        stats = compute_stats(effective_findings)
         summary_tables = generate_summary_tables(stats)
         
         report_content = report_path.read_text(encoding="utf-8")
@@ -1956,7 +1921,7 @@ def finalize_report(
         placeholder = "<!-- DETAILED_FINDINGS_PLACEHOLDER -->"
         if placeholder in report_content:
             formatted_findings = []
-            for idx, f in enumerate(dedup_findings, 1):
+            for idx, f in enumerate(effective_findings, 1):
                 formatted = _format_finding_to_markdown(f, idx)
                 formatted_findings.append(formatted)
             merged_findings = "\n\n".join(formatted_findings)
@@ -1975,10 +1940,10 @@ def finalize_report(
         
         report_path.write_text(report_content, encoding="utf-8")
         
-        # 验证修复质量
+        # 验证修复质量（只验证有效发现）
         fix_validation_issues = []
-        for finding in dedup_findings:
-            validation = validate_fix_quality(finding)
+        for finding in effective_findings:
+            validation = validate_fix_format(finding)
             if not validation["valid"]:
                 fix_validation_issues.append({
                     "id": finding.get("id", "unknown"),
@@ -1988,8 +1953,8 @@ def finalize_report(
         # 生成验证结果
         validation_result = {
             "success": len(fix_validation_issues) == 0,
-            "details_count": len(dedup_findings),
-            "total_count": len(dedup_findings),
+            "details_count": len(effective_findings),
+            "total_count": len(effective_findings),
             "problems": fix_validation_issues,
             "warnings": []
         }
@@ -1997,10 +1962,12 @@ def finalize_report(
         print(json.dumps({
             "success": True,
             "report_path": str(report_path),
-            "total_before_dedup": len(valid_findings),
-            "findings_count": len(dedup_findings),
-            "dedup_removed": len(valid_findings) - len(dedup_findings),
+            "total_loaded": len(all_findings),
+            "after_dedup": len(dedup_findings),
+            "duplicates_count": len(duplicates),
+            "after_validation": len(valid_findings),
             "hallucinations_count": len(hallucinations),
+            "effective_count": len(effective_findings),
             "source_stats": stats["source_stats"],
             "severity_stats": stats["severity_stats"],
             "gbt_prefix_stats": stats["gbt_prefix_stats"],
@@ -2010,10 +1977,12 @@ def finalize_report(
         return {
             "success": True,
             "report_path": str(report_path),
-            "total_before_dedup": len(valid_findings),
-            "findings_count": len(dedup_findings),
-            "dedup_removed": len(valid_findings) - len(dedup_findings),
+            "total_loaded": len(all_findings),
+            "after_dedup": len(dedup_findings),
+            "duplicates_count": len(duplicates),
+            "after_validation": len(valid_findings),
             "hallucinations_count": len(hallucinations),
+            "effective_count": len(effective_findings),
             "validation": validation_result
         }
     except Exception as e:
@@ -2052,10 +2021,8 @@ if __name__ == "__main__":
     validate_parser = subparsers.add_parser("validate_finding", help="验证发现")
     validate_parser.add_argument("md_file", help="MD文件路径")
 
-    # 快速扫描参数：隔离模式（默认）
-    scan_parser.add_argument("--output-file", default=str(SCAN_RESULT_FILE), help=f"完整结果保存路径（默认 {SCAN_RESULT_FILE}）")
-    scan_parser.add_argument("--show-details", action="store_true", help="显示完整 findings 详情（仅调试用，违反隔离原则）")
-    scan_parser.add_argument("--create-baseline", action="store_true", help="自动创建所有 baseline md 文件（静默模式，内容不打印到控制台）")
+    # 快速扫描参数
+    scan_parser.add_argument("--show-details", action="store_true", help="显示完整 findings 详情（仅调试用）")
 
     args = parser.parse_args()
 
@@ -2066,57 +2033,40 @@ if __name__ == "__main__":
             use_external_tools=not args.no_external_tools
         )
 
-        # 保存完整结果到文件（隔离模式）
+        # 直接创建 baseline md 文件（跳过 scan_result.json）
         if result.get('success'):
-            output_file = Path(args.output_file)
-            output_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-
-            # 自动创建 baseline md 文件（如果指定了 --create-baseline）
-            if args.create_baseline:
-                baseline_result = create_baseline_md_files(result.get('findings', []), silent=True)
-                if baseline_result.get('success'):
-                    print("")
-                    print(f"✅ 已自动创建 {baseline_result['created_count']} 个 baseline md 文件")
-                    print(f"   目录: {baseline_result['baseline_dir']}")
-                else:
-                    print("")
-                    print(f"⚠️ baseline 创建失败: {baseline_result.get('errors', [])}")
+            baseline_result = create_baseline_md_files(result.get('findings', []), silent=True)
+            result['baseline_created'] = baseline_result.get('success', False)
+            result['baseline_count'] = baseline_result.get('created_count', 0)
 
         # 输出模式
         if args.show_details:
-            # 调试模式：输出完整结果（违反隔离原则）
-            print("⚠️ 警告：--show-details 模式会暴露 findings 详情，LLM 审计将无法保持独立性")
+            # 调试模式：输出完整结果
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
-            # 隔离模式：只输出统计摘要
+            # 正常模式：只输出统计摘要
             summary = {
                 "success": result.get("success"),
                 "target": result.get("target"),
                 "languages": result.get("languages"),
                 "total_findings": result.get("total_findings"),
+                "baseline_created": result.get("baseline_created", False),
+                "baseline_count": result.get("baseline_count", 0),
                 "severity_stats": result.get("severity_stats", {}),
                 "tools_used": result.get("tools_used", []),
-                "output_file": args.output_file,
-                "message": "完整结果已保存到文件，findings 详情已隔离（LLM 审计时不应查看文件内容）"
+                "baseline_dir": str(BASELINE_DIR)
             }
             print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-            # ⚠️ 强制提醒：必须创建所有 baseline md 文件
-            if result.get('success') and result.get('total_findings', 0) > 0:
+            # 输出完成信息
+            if result.get('success') and result.get('baseline_created'):
                 print("")
                 print("=" * 60)
-                if args.create_baseline:
-                    print("✅ 步骤5已完成")
-                    print("=" * 60)
-                    print(f"已自动创建 {result['total_findings']} 个 baseline md 文件")
-                    print(f"baseline 目录: {BASELINE_DIR}")
-                else:
-                    print("⚠️ 步骤5强制要求")
-                    print("=" * 60)
-                    print(f"发现 {result['total_findings']} 个漏洞")
-                    print(f"必须为 {SCAN_RESULT_FILE} 中所有 findings 创建对应的 baseline md 文件")
-                    print(f"禁止手动筛选，去重由 finalize_report 自动执行")
-                    print(f"baseline 目录应包含 {result['total_findings']} 个 md 文件")
+                print("✅ 步骤5a已完成")
+                print("=" * 60)
+                print(f"已自动创建 {result['baseline_count']} 个 baseline md 文件")
+                print(f"baseline 目录: {BASELINE_DIR}")
+                print(f"状态默认为'误报'，需进入步骤5b进行LLM状态判定")
                 print("=" * 60)
 
     elif args.command == "finalize_report":

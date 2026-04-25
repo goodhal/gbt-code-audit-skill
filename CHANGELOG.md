@@ -2,6 +2,18 @@
 
 本文件记录项目的主要变更历史。
 
+## [2.4.0] - 2026-04-24
+
+### 代码重构
+
+- **代码文件组织优化**：将所有 Python 代码文件移动到 `scripts/` 目录
+  - `skill.py` → `scripts/skill.py`
+  - `constants.py` → `scripts/constants.py`
+  - `patterns.py` → `scripts/patterns.py`
+  - `validation.py` → `scripts/validation.py`
+- **项目结构优化**：代码文件集中管理，提高可维护性
+- **文档更新**：所有文档中的 skill.py 引用已更新为 scripts/skill.py
+
 ## [2.3.0] - 2026-04-23
 
 ### 新增

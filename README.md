@@ -33,24 +33,23 @@ cd gbt-code-audit-skill
 在 AI Agent 中加载技能，然后按照以下流程使用：
 
 ```bash
-# 步骤 0-2: 学习流程（Agent 会自动完成）
-# 步骤 3: 创建 findings 目录
+# 步骤 0-1: 学习流程 + 语言判定（Agent 会自动完成）
+# 步骤 2: 创建 findings 目录
 mkdir -p findings/baseline findings/llm_audit
 
-# 步骤 4: 快速扫描（隔离模式，详情保存到文件）
-python skill.py quick_scan --target=/path/to/code
+# 步骤 3: 快速扫描（自动执行，正则匹配）
+python scripts/skill.py quick_scan --target=/path/to/code
 
-# 步骤 5: Agent 分析补全
-# - 读取 scan_result.json
-# - 补全国标映射、问题描述、修复方案
-# - 创建完整的 baseline md 文件
+# 步骤 4: 学习标准（Agent 学习国标规则，输出确认）
 
-# 步骤 6: LLM 独立审计（提示词约束）
-# - 不看 baseline 目录
-# - 专注调用链分析、缓解措施验证、业务逻辑漏洞
+# 步骤 5: LLM 审计（独立审计，不看 baseline 目录）
+# - 专注调用链分析、业务逻辑漏洞
+# - 创建 llm_audit md 文件
 
-# 步骤 7: 生成报告
-python skill.py finalize_report --project=my-project
+# 步骤 6: 生成报告
+python scripts/skill.py finalize_report --project=my-project
+
+# 步骤 7: 审计完成（输出报告路径）
 ```
 
 ## 支持的标准与语言
@@ -141,9 +140,9 @@ LLM 审计相比传统工具能发现：
 
 | 工具 | 说明 | 命令行用法 |
 |------|------|----------|
-| `quick_scan` | 快速扫描：正则 + Bandit/Semgrep/Gitleaks | `python skill.py quick_scan --target=<path>` |
-| `validate_finding` | 验证发现：完整性和质量检查 | `python skill.py validate_finding <md_file>` |
-| `finalize_report` | 收尾报告：去重 + 验证 + 生成 | `python skill.py finalize_report --project=<name>` |
+| `quick_scan` | 快速扫描：正则 + Bandit/Semgrep/Gitleaks | `python scripts/skill.py quick_scan --target=<path>` |
+| `validate_finding` | 验证发现：完整性和质量检查 | `python scripts/skill.py validate_finding <md_file>` |
+| `finalize_report` | 收尾报告：去重 + 验证 + 生成 | `python scripts/skill.py finalize_report --project=<name>` |
 
 **validate_finding 验证内容**：
 - 必填字段（13个字段完整性）
@@ -158,7 +157,11 @@ LLM 审计相比传统工具能发现：
 
 ```
 gbt-code-audit-skill/
-├── skill.py                 # 核心审计引擎
+├── scripts/                 # 核心代码目录
+│   ├── skill.py             # 核心审计引擎
+│   ├── constants.py         # 常量定义
+│   ├── patterns.py          # 快速扫描模式
+│   └── validation.py        # 验证函数
 ├── SKILL.md                 # 技能定义文档
 ├── README.md                # 项目说明
 ├── CLAUDE.md                # Claude Code 工作指导
@@ -178,9 +181,10 @@ gbt-code-audit-skill/
 
 ## 版本
 
-当前版本：2.3.0
+当前版本：2.4.0
 
 **更新日志**：
+- v2.4.0: 代码文件组织优化，所有代码文件移动到 scripts 目录
 - v2.3.0: 支持16+种语言、双国标映射、LLM审计优势发挥指引、validate_finding 扩展验证
 - v2.2.0: 重构代码消除冗余、添加去重统计输出
 

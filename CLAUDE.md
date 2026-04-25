@@ -12,13 +12,13 @@
 
 ```bash
 # 快速扫描
-python skill.py quick_scan --target=/path/to/code
+python scripts/skill.py quick_scan --target=/path/to/code
 
 # 验证发现
-python skill.py validate_finding findings/llm_audit/001.md
+python scripts/skill.py validate_finding findings/llm_audit/001.md
 
 # 生成报告
-python skill.py finalize_report --project=my-project --languages java python
+python scripts/skill.py finalize_report --project=my-project --languages java python
 ```
 
 > ⚠️ 多值参数使用空格分隔，如 `--languages java python`。
