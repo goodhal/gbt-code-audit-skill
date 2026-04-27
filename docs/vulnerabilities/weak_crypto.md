@@ -4,7 +4,66 @@
 
 使用不安全的哈希算法（如MD5、SHA1）或加密算法（如DES、RC4）会使得数据容易被破解。
 
-## 危险模式
+## 检测方法
+
+### 1. 静态代码检测
+
+#### 1.1 弱哈希算法检测
+
+```bash
+# Java - MD5/SHA1 检测
+grep -rn 'MessageDigest\.getInstance\s*\(\s*["\']MD5["\']' --include='*.java'
+grep -rn 'MessageDigest\.getInstance\s*\(\s*["\']SHA-?1["\']' --include='*.java'
+grep -rn '"SHA1"' --include='*.java'
+
+# Python - hashlib 弱算法
+grep -rn 'hashlib\.md5\s*(' --include='*.py'
+grep -rn 'hashlib\.sha1\s*(' --include='*.py'
+grep -rn 'hashlib\.sha\s*\(' --include='*.py'
+
+# C/C++ - OpenSSL 弱算法
+grep -rn 'MD5\s*(' --include='*.c' --include='*.cpp'
+grep -rn 'SHA1\s*(' --include='*.c' --include='*.cpp'
+```
+
+#### 1.2 弱加密算法检测
+
+```bash
+# Java - DES/RC4 检测
+grep -rn 'Cipher\.getInstance\s*\(\s*["\']DES' --include='*.java'
+grep -rn 'Cipher\.getInstance\s*\(\s*["\']RC4' --include='*.java'
+grep -rn 'DES\.Create\s*\(' --include='*.java'
+grep -rn 'DES\.CryptoServiceProvider\s*\(' --include='*.java'
+
+# Python - pycrypto 弱算法
+grep -rn 'Crypto\.Cipher\.DES' --include='*.py'
+grep -rn 'ARC4\.new\s*(' --include='*.py'
+```
+
+#### 1.3 密钥长度检测
+
+```bash
+# Java - 短密钥检测
+grep -rn 'new\s+SecretKeySpec\s*\(\s*"[^"]{1,16}"' --include='*.java'
+grep -rn 'KeyGenerator\s*\(\s*["\']AES["\'].*128' --include='*.java'
+
+# Python - 密钥长度检测
+grep -rn '.Key\s*=\s*"[^"]{1,16}"' --include='*.py'
+```
+
+### 2. 随机数生成检测
+
+```bash
+# Java - Random 用于安全目的
+grep -rn 'new\s+Random\s*\(\s*\)' --include='*.java'
+
+# Python - random 用于安全目的
+grep -rn 'random\.random\s*\(' --include='*.py'
+grep -rn 'random\.randint\s*\(' --include='*.py'
+grep -rn 'random\.choice\s*\(' --include='*.py'
+```
+
+### 3. 危险模式
 
 ### Java
 ```java

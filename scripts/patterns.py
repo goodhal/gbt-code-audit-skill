@@ -1,195 +1,75 @@
 """
 快速扫描模式模块
-包含各语言的高风险函数检测规则
+支持从 YAML 配置文件加载漏洞检测规则
 """
 import re
-from typing import Dict, List
+import os
+from typing import Dict, List, Optional
+from pathlib import Path
+
+import yaml
 
 _COMPILED_PATTERNS: Dict[str, List[tuple]] = {}
+_RULES_VERSION: str = ""
+_RULES_PATH: Optional[str] = None
+
+def get_rules_path() -> str:
+    """获取规则文件路径"""
+    global _RULES_PATH
+    if _RULES_PATH:
+        return _RULES_PATH
+
+    script_dir = Path(__file__).parent.resolve()
+    default_path = script_dir / "vulnerability_rules.yaml"
+
+    env_path = os.environ.get("AUDIT_RULES_PATH")
+    if env_path and Path(env_path).exists():
+        _RULES_PATH = env_path
+    elif default_path.exists():
+        _RULES_PATH = str(default_path)
+    else:
+        raise FileNotFoundError(f"规则文件未找到: {default_path}")
+
+    return _RULES_PATH
+
+def load_rules_from_yaml() -> Dict[str, List[Dict]]:
+    """从 YAML 文件加载规则
+
+    Returns:
+        Dict[str, List[Dict]]: 语言到规则列表的映射
+    """
+    rules_path = get_rules_path()
+    with open(rules_path, 'r', encoding='utf-8') as f:
+        data = yaml.safe_load(f)
+
+    global _RULES_VERSION
+    _RULES_VERSION = data.get("version", "1.0")
+
+    return data.get("rules", {})
 
 def quick_scan_patterns() -> Dict[str, List[tuple]]:
     """快速扫描模式
-    
+
     负责发现高风险函数调用，如命令注入、SQL注入、缓冲区溢出等。
     这些漏洞特征明显，可以通过正则表达式快速识别。
-    
+
     Returns:
         Dict[str, List[tuple]]: 语言到模式的映射
     """
-    return {
-        "java": [
-            (r"Runtime\.getRuntime\(\)\.exec\s*\(", "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r"ProcessBuilder\s*\(", "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r'String\s+sql\s*=\s*["\'].*?\+.*?["\']', "SQL_INJECTION", "CWE-89", "严重"),
-            (r"Statement\.execute", "SQL_INJECTION", "CWE-89", "严重"),
-            (r"ORDER BY.*\+", "SQL_INJECTION", "CWE-89", "严重"),
-            (r"XPath.*\+", "XPATH_INJECTION", "CWE-643", "高危"),
-            (r'password\s*=\s*"[^"]{3,}"', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
-            (r'(?:private\s+)?(?:static\s+)?(?:final\s+)?String\s+\w*(?:PASSWORD|PASS|SECRET|KEY|TOKEN)\s*=\s*"[^"]{3,}"', "HARD_CODE_SECRET", "CWE-321", "严重"),
-            (r'new\s+File\s*\(\s*[^"]*\s*\+\s*', "PATH_TRAVERSAL", "CWE-22", "高危"),
-            (r'FileInputStream\s*\(\s*[^"]*\s*\+\s*', "PATH_TRAVERSAL", "CWE-22", "高危"),
-            (r"ScriptEngine.*eval\s*\(", "CODE_INJECTION", "CWE-94", "严重"),
-            (r"System\.load\s*\(", "PROCESS_CONTROL", "CWE-114", "高危"),
-            (r'MessageDigest\.getInstance\s*\(\s*["\']MD5["\']', "WEAK_HASH", "CWE-328", "高危"),
-            (r'MessageDigest\.getInstance\s*\(\s*["\']SHA-?1["\']', "WEAK_HASH", "CWE-328", "高危"),
-            (r'Cipher\.getInstance\s*\(\s*["\']DES["\']', "WEAK_CRYPTO", "CWE-327", "高危"),
-            (r"new\s+Random\s*\(\s*\)", "PREDICTABLE_RANDOM", "CWE-338", "高危"),
-            (r"println.*password", "INFO_LEAK", "CWE-532", "中危"),
-            (r"println.*DEBUG.*token", "INFO_LEAK", "CWE-532", "中危"),
-            (r"session\.put\s*\(", "SESSION_FIXATION", "CWE-384", "高危"),
-            (r"Cookie.*=.*\".*\"", "COOKIE_MANIPULATION", "CWE-565", "高危"),
-            (r"referer.*contains", "AUTH_BYPASS", "CWE-287", "高危"),
-            (r"byte\[.*\]\s*=\s*new\s+byte\[.*size", "UNCONTROLLED_MEMORY", "CWE-770", "高危"),
-            (r"catch\s*\(\s*Exception\s*\)\s*\{\s*\}", "IMPROPER_EXCEPTION_HANDLING", "CWE-703", "高危"),
-            (r"catch\s*\(\s*\)\s*\{\s*\}", "IMPROPER_EXCEPTION_HANDLING", "CWE-703", "高危"),
-            (r"password\.length\s*\(\s*\)\s*>=\s*4", "WEAK_PASSWORD_POLICY", "CWE-521", "中危"),
-            (r"session\.put\s*\(\s*\"username\"", "TRUST_BOUNDARY_VIOLATION", "CWE-501", "高危"),
-            (r"session\.put\s*\(\s*\"user\"", "TRUST_BOUNDARY_VIOLATION", "CWE-501", "高危"),
-            (r"session\.get\s*\(\s*\"timeout\"", "SESSION_TIMEOUT", "CWE-613", "中危"),
-            (r"getCanonicalHostName\s*\(", "DNS_TRUST", "CWE-350", "中危"),
-            (r"getHostEntry\s*\(", "DNS_TRUST", "CWE-350", "中危"),
-            (r"new\s+SecretKeySpec\s*\(\s*\"[^\"]{16}\"", "HARDCODED_KEY", "CWE-321", "严重"),
-            (r"fixedIV\s*\[", "FIXED_IV", "CWE-329", "高危"),
-            (r"IvParameterSpec\s*\(\s*fixedIV", "FIXED_IV", "CWE-329", "高危"),
-            (r"SHA256\.withoutSalt", "NO_SALT_HASH", "CWE-759", "高危"),
-            (r"MessageDigest\.digest\s*\(\s*password\.getBytes", "NO_SALT_HASH", "CWE-759", "高危"),
-            (r"for\s*\(\s*int\s+i\s*=\s*0\s*;\s*i\s*<\s*count", "UNCONTROLLED_LOOP", "CWE-606", "中危"),
-            (r"FileOutputStream\s*\(\s*\"/uploads/\"", "UNRESTRICTED_UPLOAD", "CWE-434", "高危"),
-            (r"implements\s+Serializable", "SENSITIVE_SERIALIZATION", "CWE-213", "中危"),
-            (r"private\s+String\s+password", "SENSITIVE_FIELD", "CWE-213", "中危"),
-            (r"http://api\.example\.com", "PLAINTEXT_TRANSMISSION", "CWE-319", "严重"),
-            (r"URL\s*\(\s*\"http://", "PLAINTEXT_TRANSMISSION", "CWE-319", "严重"),
-            (r"cookie\.Value\s*==\s*\"true\"", "COOKIE_AUTH_BYPASS", "CWE-287", "高危"),
-            (r"cookie\.Value\s*==\s*\"valid\"", "COOKIE_AUTH_BYPASS", "CWE-287", "高危"),
-            (r"Arrays\.toString\s*\(\s*e\.getStackTrace", "STACK_TRACE_LEAK", "CWE-209", "中危"),
-            (r"e\.toString\s*\(\s*\)", "ERROR_MSG_LEAK", "CWE-209", "中危"),
-            (r"BigInteger\s*\(\s*price", "PARAMETER_TAMPERING", "CWE-20", "高危"),
-            (r"Integer\.parseInt\s*\(\s*quantity", "PARAMETER_TAMPERING", "CWE-20", "高危"),
-            (r"setMaxAge\s*\(\s*1209600", "PERSISTENT_COOKIE", "CWE-539", "中危"),
-            (r"Secure\s*=\s*false", "COOKIE_SECURE_MISSING", "CWE-614", "高危"),
-            (r"sessionCookie\s*=\s*\"sessionId", "COOKIE_SECURE_MISSING", "CWE-614", "高危"),
-        ],
-        "python": [
-            (r"os\.system\s*\(", "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r"subprocess\.\w+\s*\(.*shell\s*=\s*True", "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r"subprocess\.Popen\s*\(", "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r"\bexec\s*\(", "CODE_INJECTION", "CWE-94", "严重"),
-            (r"\beval\s*\(", "CODE_INJECTION", "CWE-94", "严重"),
-            (r"pickle\.load", "DESERIALIZATION", "CWE-502", "严重"),
-            (r"yaml\.load\s*\(", "DESERIALIZATION", "CWE-502", "严重"),
-            (r"urllib\.request\.urlopen\s*\(", "SSRF", "CWE-918", "严重"),
-            (r'\bpassword\s*=\s*["\']\w+["\']', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
-            (r'\b(api|secret|token|key)\s*=\s*["\']\w+["\']', "HARD_CODE_SECRET", "CWE-321", "严重"),
-            (r'HARDCODED_\w*\s*=\s*["\']', "HARD_CODE_SECRET", "CWE-321", "严重"),
-            (r"hashlib\.md5", "WEAK_HASH", "CWE-328", "高危"),
-            (r"hashlib\.sha1", "WEAK_HASH", "CWE-328", "高危"),
-            (r"random\.rand", "PREDICTABLE_RANDOM", "CWE-338", "高危"),
-            (r"logging\.info.*password", "INFO_LEAK", "CWE-532", "中危"),
-            (r"print.*token", "INFO_LEAK", "CWE-532", "中危"),
-            (r"is_admin\s*=\s*user_input", "AUTH_BYPASS", "CWE-287", "严重"),
-            (r"skip_auth", "AUTH_BYPASS", "CWE-287", "严重"),
-            (r"get_resource\s*\(", "MISSING_ACCESS_CONTROL", "CWE-862", "严重"),
-            (r"while True:", "INFINITE_LOOP", "CWE-835", "高危"),
-            (r"range\(10000000", "RESOURCE_EXHAUSTION", "CWE-400", "高危"),
-            (r"execute\(.*f\"", "SQL_INJECTION", "CWE-89", "严重"),
-            (r"open\(.*filename", "PATH_TRAVERSAL", "CWE-22", "高危"),
-            (r"except:\s*pass", "IMPROPER_EXCEPTION_HANDLING", "CWE-703", "高危"),
-            (r"except Exception:\s*pass", "IMPROPER_EXCEPTION_HANDLING", "CWE-703", "高危"),
-            (r"self\.counter\s*\+=\s*1", "RACE_CONDITION", "CWE-362", "高危"),
-            (r"session_data\s*=\s*\{\}", "SESSION_INFO_LEAK", "CWE-200", "高危"),
-            (r"self\.session_data\[", "SESSION_INFO_LEAK", "CWE-200", "高危"),
-            (r"return\s+\"用户名不存在\"", "AUTH_INFO_EXPOSURE", "CWE-204", "中危"),
-            (r"return\s+\"密码错误\"", "AUTH_INFO_EXPOSURE", "CWE-204", "中危"),
-            (r"input\s*\(\s*\"Enter password", "PASSWORD_DISPLAY", "CWE-256", "低危"),
-            (r"store_user_data\s*\(", "PERSONAL_INFO_EXPOSURE", "CWE-359", "高危"),
-            (r"do_sensitive_operation\s*\(", "SENSITIVE_OPERATION", "CWE-200", "高危"),
-            (r"register_callback\s*\(", "UNINITIALIZED_OBJECT", "CWE-909", "高危"),
-            (r"threading\.local\s*\(\)", "THREAD_LOCAL_LEAK", "CWE-362", "中危"),
-            (r"user_input\.format\s*\(", "FORMAT_STRING", "CWE-134", "高危"),
-            (r"buffer\s*\[\s*:\s*len\s*\(", "BUFFER_OVERFLOW", "CWE-120", "高危"),
-            (r"bytearray\s*\(\s*len\s*\(", "BUFFER_OVERFLOW", "CWE-120", "高危"),
-            (r"f\.close\s*\(\s*\)\s*f\.close", "DOUBLE_FREE", "CWE-415", "高危"),
-            (r"obj\.close\s*\(\s*\)\s*return\s+obj", "USE_AFTER_FREE", "CWE-416", "高危"),
-            (r"tempfile\.NamedTemporaryFile\s*\(", "TEMP_FILE_EXPOSURE", "CWE-377", "中危"),
-            (r"global_cache\.append", "MEMORY_LEAK", "CWE-401", "中危"),
-            (r"uncontrolled_recursion", "UNCONTROLLED_RECURSION", "CWE-674", "中危"),
-            (r"100\s*/\s*divisor", "DIVIDE_BY_ZERO", "CWE-369", "中危"),
-            (r"arr\s*\[\s*index\s*\]", "MISSING_BOUNDARY_CHECK", "CWE-127", "高危"),
-            (r"internal_data\s*\[", "TRUST_BOUNDARY_VIOLATION", "CWE-501", "高危"),
-            (r"if\s+True:", "DEAD_CODE", "CWE-561", "低危"),
-            (r"if\s+False:", "DEAD_CODE", "CWE-561", "低危"),
-            (r"return\s+\"result\"\s*print", "DEAD_CODE", "CWE-561", "低危"),
-            (r"if\s+action\s*==\s*\"read\"", "MISSING_DEFAULT_CASE", "CWE-484", "低危"),
-            (r"if\s+user_type\s*==\s*\"admin\"", "INSUFFICIENT_COMPARISON", "CWE-697", "中危"),
-            (r"\"script\"\s+in\s+input_str\.lower", "BYPASS_VALIDATION", "CWE-20", "高危"),
-            (r"response\.headers\s*\[", "HTTP_HEADER_INJECTION", "CWE-79", "高危"),
-            (r"response\.write\s*\(", "XSS", "CWE-79", "高危"),
-            (r"response\.redirect\s*\(", "OPEN_REDIRECT", "CWE-601", "高危"),
-            (r"verify_token\s*\(", "AUTH_BYPASS", "CWE-287", "高危"),
-            (r"check_password\s*\(", "NO_RATE_LIMIT", "CWE-799", "高危"),
-            (r"verify_password\s*\(", "SINGLE_FACTOR_AUTH", "CWE-308", "中危"),
-            (r"lock\.acquire\s*\(", "UNRESTRICTED_LOCK", "CWE-413", "高危"),
-            (r"logging\.info\s*\(\s*\"User action", "LOG_INJECTION", "CWE-93", "中危"),
-            (r"pickle\.dump\s*\(", "DESERIALIZATION", "CWE-502", "高危"),
-            (r"ctypes\.c_void_p\s*\(", "INVALID_POINTER", "CWE-822", "高危"),
-            (r"ctypes\.cast\s*\(", "INCOMPATIBLE_POINTER", "CWE-704", "高危"),
-            (r"os\.environ\.get\s*\(", "UNSAFE_INITIALIZATION", "CWE-456", "高危"),
-            (r"init_critical_resource\s*\(", "INIT_FAILURE", "CWE-456", "中危"),
-            (r"large_object\s*\(", "MEMORY_LEAK", "CWE-401", "中危"),
-            (r"create_object\s*\(", "USE_AFTER_FREE", "CWE-416", "高危"),
-            (r"process_data\s*\(", "INFINITE_LOOP", "CWE-835", "高危"),
-            (r"sorted\s*\(\s*data", "ALGORITHM_COMPLEXITY", "CWE-400", "高危"),
-            (r"password_buffer\s*=\s*None", "HEAP_MEMORY_CLEANUP", "CWE-226", "高危"),
-            (r"get_token\s*\(", "INFO_LEAK", "CWE-200", "高危"),
-            (r"user_exists\s*\(", "AUTH_INFO_EXPOSURE", "CWE-204", "中危"),
-        ],
-        "cpp": [
-            (r'system\s*\(\s*[^"]*\s*\+', "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r'popen\s*\(', "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r'sprintf\s*\(\s*\w+\s*,\s*[^"]*\s*\+', "BUFFER_OVERFLOW", "CWE-120", "严重"),
-            (r"strcpy\s*\(", "BUFFER_OVERFLOW", "CWE-120", "严重"),
-            (r"gets\s*\(", "BUFFER_OVERFLOW", "CWE-120", "严重"),
-            (r"scanf\s*\(", "BUFFER_OVERFLOW", "CWE-120", "严重"),
-            (r"memcpy\s*\(", "BUFFER_OVERFLOW", "CWE-120", "严重"),
-            (r"printf\s*\(\s*\w+\s*\)", "FORMAT_STRING", "CWE-134", "高危"),
-            (r"malloc\s*\(\s*\w+\s*\*\s*\d+\s*\)", "INTEGER_OVERFLOW", "CWE-190", "高危"),
-            (r'password\s*=\s*"[^"]{3,}"', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
-            (r'HARDCODED_\w*\s*=\s*"', "HARD_CODE_SECRET", "CWE-321", "严重"),
-            (r"DES_set_key", "WEAK_CRYPTO", "CWE-327", "高危"),
-            (r"SHA1\s*\(", "WEAK_HASH", "CWE-328", "高危"),
-            (r"rand\s*\(\s*\)", "PREDICTABLE_RANDOM", "CWE-338", "高危"),
-            (r"fixedIV\s*\[", "FIXED_IV", "CWE-329", "高危"),
-            (r'fopen\s*\(\s*[^"]*\s*\+\s*', "PATH_TRAVERSAL", "CWE-22", "高危"),
-            (r"LoadLibrary\s*\(", "PROCESS_CONTROL", "CWE-114", "高危"),
-            (r"dlopen\s*\(", "PROCESS_CONTROL", "CWE-114", "高危"),
-            (r"sprintf.*password", "INFO_LEAK", "CWE-532", "中危"),
-            (r"RSA_PKCS1_PADDING", "RSA_PADDING", "CWE-780", "高危"),
-        ],
-        "csharp": [
-            (r"Process\.Start\s*\(", "COMMAND_INJECTION", "CWE-78", "严重"),
-            (r"SqlCommand\s*=\s*new\s+SqlCommand\s*\(.*\+.*\)", "SQL_INJECTION", "CWE-89", "严重"),
-            (r"ORDER BY.*\+", "SQL_INJECTION", "CWE-89", "严重"),
-            (r"XPath.*\+", "XPATH_INJECTION", "CWE-643", "高危"),
-            (r'password\s*=\s*"[^"]{3,}"', "HARD_CODE_PASSWORD", "CWE-259", "严重"),
-            (r'HARDCODED_\w*\s*=\s*"', "HARD_CODE_SECRET", "CWE-321", "严重"),
-            (r'\b(api|secret|token|key)\s*=\s*"\w+"', "HARD_CODE_SECRET", "CWE-321", "严重"),
-            (r"DES\.Create\s*\(\)", "WEAK_CRYPTO", "CWE-327", "高危"),
-            (r"SHA1\.Create\s*\(\)", "WEAK_HASH", "CWE-328", "高危"),
-            (r"Random\s*=\s*new\s+Random\s*\(\)", "PREDICTABLE_RANDOM", "CWE-338", "高危"),
-            (r"fixedIV\s*\[", "FIXED_IV", "CWE-329", "高危"),
-            (r'File\.ReadAllText\s*\(\s*[^"]*\s*\+\s*', "PATH_TRAVERSAL", "CWE-22", "高危"),
-            (r"Path\.Combine\s*\(", "PATH_TRAVERSAL", "CWE-22", "高危"),
-            (r"Assembly\.LoadFrom\s*\(", "PROCESS_CONTROL", "CWE-114", "高危"),
-            (r"Trace\.WriteLine.*password", "INFO_LEAK", "CWE-532", "中危"),
-            (r"Debug\.WriteLine.*token", "INFO_LEAK", "CWE-532", "中危"),
-            (r"session\[.*\]\s*=\s*username", "SESSION_FIXATION", "CWE-384", "高危"),
-            (r"Cookie.*=.*\".*\"", "COOKIE_MANIPULATION", "CWE-565", "高危"),
-            (r"referer.*contains", "AUTH_BYPASS", "CWE-287", "高危"),
-            (r"resp\.Write\s*\(", "XSS", "CWE-79", "高危"),
-            (r"resp\.Redirect\s*\(", "OPEN_REDIRECT", "CWE-601", "中危"),
-            (r"RSA.*Encrypt.*false", "RSA_PADDING", "CWE-780", "高危"),
-        ],
-    }
+    raw_rules = load_rules_from_yaml()
+
+    patterns = {}
+    for lang, rules in raw_rules.items():
+        lang_patterns = []
+        for rule in rules:
+            pattern = rule.get("pattern", "")
+            vuln_type = rule.get("vuln_type", "UNKNOWN")
+            cwe = rule.get("cwe", "CWE-000")
+            severity = rule.get("severity", "未知")
+            lang_patterns.append((pattern, vuln_type, cwe, severity))
+        patterns[lang] = lang_patterns
+
+    return patterns
 
 def _init_compiled_patterns():
     """模块加载时预编译所有正则表达式"""
@@ -197,11 +77,50 @@ def _init_compiled_patterns():
     for lang, patterns in pattern_strings.items():
         compiled = []
         for pattern, vuln_type, cwe, severity in patterns:
-            compiled.append((re.compile(pattern), vuln_type, cwe, severity))
+            try:
+                compiled.append((re.compile(pattern), vuln_type, cwe, severity))
+            except re.error as e:
+                print(f"警告: 语言 {lang} 的正则表达式编译失败: {pattern}, 错误: {e}")
         _COMPILED_PATTERNS[lang] = compiled
 
 _init_compiled_patterns()
 
 def get_compiled_patterns() -> Dict[str, List[tuple]]:
-    """获取预编译的模式"""
+    """获取预编译的模式
+
+    Returns:
+        Dict[str, List[tuple]]: 语言到编译后模式的映射
+    """
     return _COMPILED_PATTERNS
+
+def get_rules_version() -> str:
+    """获取当前加载的规则版本
+
+    Returns:
+        str: 规则版本号
+    """
+    return _RULES_VERSION
+
+def get_supported_languages() -> List[str]:
+    """获取支持的语言列表
+
+    Returns:
+        List[str]: 语言列表
+    """
+    return list(_COMPILED_PATTERNS.keys())
+
+def get_rule_count() -> Dict[str, int]:
+    """获取各语言的规则数量
+
+    Returns:
+        Dict[str, int]: 语言到规则数量的映射
+    """
+    return {lang: len(patterns) for lang, patterns in _COMPILED_PATTERNS.items()}
+
+def reload_rules():
+    """重新加载规则（用于热更新）"""
+    global _COMPILED_PATTERNS, _RULES_VERSION, _RULES_PATH
+    _COMPILED_PATTERNS = {}
+    _RULES_VERSION = ""
+    _RULES_PATH = None
+    _init_compiled_patterns()

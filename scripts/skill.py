@@ -41,6 +41,8 @@ from validation import (
     validate_code_snippet,
     validate_finding,
 )
+from severity_rating import calculate_cvss, generate_vuln_id
+from validation_report import QualityChecker
 
 # 硬排除规则
 class HardExclusionRules:
@@ -268,31 +270,38 @@ def run_semgrep_scan(target: str, language: str) -> List[Dict]:
 # 快速扫描单个文件
 def quick_scan_file(file_path: str, language: str) -> List[Dict]:
     """快速扫描单个文件
-    
+
     Args:
         file_path: 文件路径
         language: 语言
-        
+
     Returns:
         List[Dict]: 扫描结果
     """
     findings = []
-    
+    sequence_counter = 0
+
     try:
         content = Path(file_path).read_text(encoding='utf-8')
-        
+
         # 使用预编译的正则模式
         for pattern, vuln_type, cwe, severity in get_compiled_patterns().get(language, []):
             for match in pattern.finditer(content):
                 # 计算行号
                 line_num = content[:match.start()].count('\n') + 1
-                
+
                 # 提取代码片段（前后各2行，共约5行）
                 lines = content.split('\n')
                 start_line = max(0, line_num - 2)
                 end_line = min(len(lines), line_num + 2)
                 code_snippet = '\n'.join(lines[start_line:end_line])
-                
+
+                # 计算漏洞评级
+                reachability, impact, complexity = _get_default_scoring(language, vuln_type)
+                raw_score, cvss, rating_severity = calculate_cvss(reachability, impact, complexity)
+                sequence_counter += 1
+                vuln_id = generate_vuln_id(vuln_type, severity, sequence_counter)
+
                 findings.append({
                     "file": file_path,
                     "line": line_num,
@@ -302,12 +311,51 @@ def quick_scan_file(file_path: str, language: str) -> List[Dict]:
                     "description": f"发现{severity}漏洞: {vuln_type}",
                     "code_snippet": code_snippet,
                     "source": "quick_scan",
-                    "language": language
+                    "language": language,
+                    "vuln_id": vuln_id,
+                    "cvss": cvss,
+                    "rating_severity": rating_severity,
+                    "scoring": {
+                        "reachability": reachability,
+                        "impact": impact,
+                        "complexity": complexity,
+                        "raw_score": raw_score
+                    }
                 })
     except Exception as e:
         print(f"扫描文件失败 {file_path}: {e}")
-    
+
     return findings
+
+
+def _get_default_scoring(language: str, vuln_type: str) -> Tuple[int, int, int]:
+    """获取默认评分参数
+
+    Args:
+        language: 编程语言
+        vuln_type: 漏洞类型
+
+    Returns:
+        Tuple[int, int, int]: (可达性, 影响, 复杂度)
+    """
+    high_impact_types = {
+        "COMMAND_INJECTION", "CODE_INJECTION", "DESERIALIZATION",
+        "SQL_INJECTION", "PATH_TRAVERSAL"
+    }
+    medium_impact_types = {
+        "XSS", "SSRF", "XXE", "WEAK_CRYPTO", "WEAK_HASH"
+    }
+
+    if vuln_type in high_impact_types:
+        return (8, 9, 6)
+    elif vuln_type in medium_impact_types:
+        return (6, 7, 5)
+    elif vuln_type == "HARD_CODE_PASSWORD":
+        return (7, 8, 4)
+    elif vuln_type == "INFO_LEAK":
+        return (5, 5, 3)
+    else:
+        return (6, 6, 5)
 
 # 并行快速扫描
 def parallel_quick_scan(code_files: List[str], file_lang_map: Dict[str, str], max_workers: int = MAX_WORKERS) -> List[Dict]:
@@ -456,9 +504,18 @@ def create_baseline_md_files(findings: List[Dict], silent: bool = True) -> Dict:
             description = finding.get('description', '')
             source = finding.get('source', 'baseline')
 
-
             # 获取国标映射
             gbt_mapping = get_gbt_mapping(vuln_type, lang)
+
+            # 获取漏洞评级信息
+            vuln_id = finding.get('vuln_id', '')
+            cvss = finding.get('cvss', 0)
+            rating_severity = finding.get('rating_severity', severity)
+            scoring = finding.get('scoring', {})
+            reachability = scoring.get('reachability', '-')
+            impact = scoring.get('impact', '-')
+            complexity = scoring.get('complexity', '-')
+            raw_score = scoring.get('raw_score', '-')
 
             # 构建 md 内容
             md_content = f"""编号: #{idx:03d}
@@ -473,6 +530,9 @@ CWE: {cwe}
 状态: 误报
 问题代码: {code_snippet}
 问题描述: {description}
+漏洞编号: {vuln_id}
+CVSS评分: {cvss} ({rating_severity})
+可利用性/影响/复杂度: {reachability}/{impact}/{complexity} (原始分: {raw_score})
 """
 
             md_path.write_text(md_content, encoding='utf-8')
@@ -655,7 +715,8 @@ def parse_finding_md(content: str) -> Dict:
     valid_fields = {
         '编号', '严重等级', '漏洞类型', '文件路径', '行号',
         'CWE', 'cwe', '国标映射', '来源', '语言',
-        '问题代码', '问题描述', '修复方案', '状态'
+        '问题代码', '问题描述', '修复方案', '状态',
+        '漏洞编号', 'CVSS评分', '可利用性/影响/复杂度'
     }
 
     key_mapping = {
@@ -672,6 +733,9 @@ def parse_finding_md(content: str) -> Dict:
         '问题描述': 'description', 'description': 'description',
         '修复方案': 'fix', 'fix': 'fix',
         '状态': 'status', 'status': 'status',
+        '漏洞编号': 'vuln_id', 'vuln_id': 'vuln_id',
+        'CVSS评分': 'cvss', 'cvss': 'cvss',
+        '可利用性/影响/复杂度': 'scoring_detail', 'scoring_detail': 'scoring_detail',
     }
     
     result = {}
@@ -683,6 +747,16 @@ def parse_finding_md(content: str) -> Dict:
     for line in lines:
         # 不要 strip 整行，因为问题代码需要保留原始格式
         stripped_line = line.strip()
+        
+        # 检查是否是代码块结束（对于问题代码字段）
+        if current_key == '问题代码' and stripped_line == '```':
+            current_value.append(line)
+            # 代码块结束，立即保存
+            result[key_mapping.get(current_key, current_key)] = '\n'.join(current_value).strip()
+            current_key = None
+            current_value = []
+            continue
+        
         if not stripped_line:
             continue
         
@@ -928,6 +1002,14 @@ def validate_finding(md_file: str) -> Dict:
         validation_results['fix'] = fix_validation
         if not fix_validation['valid']:
             all_issues.extend(fix_validation['issues'])
+
+        # 6. 质量检查器验证
+        qc = QualityChecker()
+        passed, qc_result = qc.check_all(finding, md_file)
+        validation_results['quality_check'] = qc_result
+        if not passed:
+            all_issues.extend(qc_result.get('errors', []))
+        validation_results['passed_checks'] = qc_result.get('passed_checks', [])
 
         # 构建返回结果
         if len(all_issues) == 0:
@@ -1607,62 +1689,100 @@ def generate_summary_tables(stats: Dict) -> str:
 
 def _format_finding_to_markdown(finding: Dict, index: int) -> str:
     """将发现格式化为 Markdown（符合 SKILL.md 定义的格式）
-    
+
     Args:
         finding: 审计发现
         index: 发现的索引
-        
+
     Returns:
         str: 格式化后的 Markdown
     """
     lines = []
-    
+
     severity = finding.get("severity", "未知")
     vuln_type = finding.get("type", "未知")
     source = finding.get("source", "未知")
     file_path = finding.get("file", "")
     line_num = finding.get("line", 0)
-    
+
     severity_icon = _get_severity_icon(severity)
     source_display = _get_source_icon(source)
-    
+
     lines.append(f"### #{index} {severity_icon} {vuln_type}")
     lines.append("")
     lines.append(f"**来源**: {source}")
     lines.append(f"**严重性**: {severity}")
     lines.append(f"**文件**: {file_path}:{line_num}")
     lines.append("")
-    
+
+    vuln_id = finding.get("vuln_id", "")
+    if vuln_id:
+        lines.append(f"**漏洞编号**: {vuln_id}")
+        lines.append("")
+
+    cvss = finding.get("cvss", 0)
+    if cvss:
+        if isinstance(cvss, str):
+            lines.append(f"**CVSS 评分**: {cvss}")
+        else:
+            rating_severity = finding.get("rating_severity", severity)
+            lines.append(f"**CVSS 评分**: {cvss} ({rating_severity})")
+        lines.append("")
+
+    scoring_detail = finding.get("scoring_detail", "")
+    if scoring_detail:
+        lines.append(f"**评分明细**: {scoring_detail}")
+        lines.append("")
+    elif finding.get("scoring"):
+        scoring = finding.get("scoring", {})
+        reachability = scoring.get("reachability", "-")
+        impact = scoring.get("impact", "-")
+        complexity = scoring.get("complexity", "-")
+        raw_score = scoring.get("raw_score", "-")
+        lines.append(f"**可利用性/影响/复杂度**: {reachability}/{impact}/{complexity} (原始分: {raw_score})")
+        lines.append("")
+
     cwe = finding.get("cwe", "")
     if cwe:
         lines.append(f"**CWE**: {cwe}")
         lines.append("")
-    
+
     gbt_mapping = finding.get("gbt_mapping", "")
     if gbt_mapping:
         lines.append(f"**国标映射**: {gbt_mapping}")
         lines.append("")
-    
+
     language = finding.get("language", "")
     if language:
         lines.append(f"**语言**: {language}")
         lines.append("")
-    
+
+    scoring = finding.get("scoring", {})
+    if scoring:
+        reachability = scoring.get("reachability", "-")
+        impact = scoring.get("impact", "-")
+        complexity = scoring.get("complexity", "-")
+        raw_score = scoring.get("raw_score", "-")
+        lines.append(f"**可利用性/影响/复杂度**: {reachability}/{impact}/{complexity} (原始分: {raw_score})")
+        lines.append("")
+
     code_snippet = finding.get("code_snippet", "")
     if code_snippet:
         lines.append("**问题代码**:")
-        lines.append("```")
-        # 保留原始换行符
-        lines.append(str(code_snippet))
-        lines.append("```")
+        # 检查code_snippet是否已经包含代码块标记
+        if code_snippet.strip().startswith('```'):
+            lines.append(str(code_snippet))
+        else:
+            lines.append("```")
+            lines.append(str(code_snippet))
+            lines.append("```")
         lines.append("")
-    
+
     description = finding.get("description", "")
     if description:
         lines.append(f"**问题描述**: {description}")
         lines.append("")
-    
-    # 只有 LLM 审计来源才输出修复方案
+
     source = finding.get("source", "")
     if source != "quick_scan":
         fix = finding.get("fix", "")
@@ -1671,6 +1791,46 @@ def _format_finding_to_markdown(finding: Dict, index: int) -> str:
             lines.append("")
 
     return "\n".join(lines)
+
+# 为发现补充漏洞评级信息
+def _enrich_findings_with_ratings(findings: List[Dict]) -> List[Dict]:
+    """为缺少评级信息的发现补充评级
+
+    Args:
+        findings: 发现列表
+
+    Returns:
+        List[Dict]: 补充评级后的发现列表
+    """
+    import re
+
+    for finding in findings:
+        if not finding.get('vuln_id'):
+            vuln_type = finding.get('type', 'UNKNOWN')
+            severity = finding.get('severity', '未知')
+            language = finding.get('language', 'unknown')
+            source = finding.get('source', '')
+
+            reachability, impact, complexity = _get_default_scoring(language, vuln_type)
+            raw_score, cvss, rating_severity = calculate_cvss(reachability, impact, complexity)
+
+            prefix = 'LLM' if source == 'llm_audit' else 'C'
+            vuln_id = generate_vuln_id(vuln_type, severity, 0)
+
+            finding['vuln_id'] = vuln_id
+            finding['cvss'] = f"{cvss} ({rating_severity})"
+            finding['rating_severity'] = rating_severity
+            finding['scoring'] = {
+                'reachability': reachability,
+                'impact': impact,
+                'complexity': complexity,
+                'raw_score': raw_score
+            }
+
+            if not finding.get('scoring_detail'):
+                finding['scoring_detail'] = f"{reachability}/{impact}/{complexity} (原始分: {raw_score})"
+
+    return findings
 
 # 加载所有发现
 def load_all_findings() -> List[Dict]:
@@ -1835,6 +1995,9 @@ def finalize_report(
                         pass
 
         all_findings = load_all_findings()
+
+        # 为缺少评级信息的发现补充评级（包括 LLM 审计结果）
+        all_findings = _enrich_findings_with_ratings(all_findings)
 
         # 步骤 6b：先去重
         dedup_findings, duplicates = deduplicate_findings(all_findings)

@@ -4,7 +4,71 @@
 
 硬编码密码是指在源代码中直接写入明文密码、API密钥、加密密钥等敏感信息。
 
-## 危险模式
+## 检测方法
+
+### 1. 静态代码检测
+
+#### 1.1 密钥/密码变量检测
+
+```bash
+# Java - password/apiKey/secret 检测
+grep -rn 'password\s*=\s*"' --include='*.java'
+grep -rn 'apiKey\s*=\s*"' --include='*.java'
+grep -rn 'secret\s*=\s*"' --include='*.java'
+grep -rn 'token\s*=\s*"' --include='*.java'
+grep -rn 'PRIVATE\s+KEY' --include='*.java'
+
+# Python - 常见密钥模式检测
+grep -rn 'PASSWORD\s*=' --include='*.py'
+grep -rn 'API_KEY\s*=' --include='*.py'
+grep -rn 'SECRET_KEY\s*=' --include='*.py'
+grep -rn 'TOKEN\s*=' --include='*.py'
+grep -rn 'HARDCODED_' --include='*.py'
+
+# C/C++ - 密码检测
+grep -rn 'password\s*=\s*"' --include='*.c' --include='*.cpp'
+grep -rn 'char\s+\*\s*password\s*=' --include='*.c' --include='*.cpp'
+```
+
+#### 1.2 密钥格式检测
+
+```bash
+# GitHub Token 格式
+grep -rn 'ghp_[a-zA-Z0-9]\{36\}' --include='*.py' --include='*.java'
+grep -rn 'github_pat_[a-zA-Z0-9_]\{22,255\}' --include='*.py'
+
+# AWS Key 格式
+grep -rn 'AKIA[0-9A-Z]\{16\}' --include='*.py'
+grep -rn 'aws_access_key_id' --include='*.py'
+
+# JWT 格式
+grep -rn 'eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*' --include='*.py'
+```
+
+#### 1.3 加密相关常量检测
+
+```bash
+# Java - 加密密钥检测
+grep -rn 'SecretKeySpec\s*\(\s*"' --include='*.java'
+grep -rn 'KeyGenerator\s*\(\s*"' --include='*.java'
+grep -rn 'new\s+byte\[\s*\]\s*\{' --include='*.java' | grep -i 'key\|iv\|salt'
+
+# Python - hashlib 检测
+grep -rn 'hashlib\.md5\s*(' --include='*.py'
+grep -rn 'hashlib\.sha1\s*(' --include='*.py'
+```
+
+### 2. 配置文件检测
+
+检查配置文件中的硬编码密钥：
+
+```bash
+# 检测配置文件中的密钥
+grep -rn 'password\s*=' --include='*.properties' --include='*.yml' --include='*.yaml' --include='*.json'
+grep -rn 'apiKey\s*=' --include='*.properties' --include='*.yml' --include='*.yaml'
+```
+
+### 3. 危险模式
 
 ### Java
 ```java

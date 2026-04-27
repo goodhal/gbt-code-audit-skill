@@ -4,7 +4,51 @@
 
 路径遍历漏洞发生在应用程序使用用户可控输入访问文件时，攻击者可以通过构造特殊路径访问敏感文件。
 
-## 危险模式
+## 检测方法
+
+### 1. 静态代码检测
+
+#### 1.1 文件操作函数检测
+
+```bash
+# Java - File/FileInputStream 检测
+grep -rn 'new\s\+File\s*\(' --include='*.java'
+grep -rn 'FileInputStream\s*\(' --include='*.java'
+grep -rn 'FileReader\s*\(' --include='*.java'
+grep -rn 'Paths\.get\s*\(' --include='*.java'
+grep -rn 'Files\.readAllBytes\s*\(' --include='*.java'
+
+# Python - open() 检测
+grep -rn 'open\s*(' --include='*.py'
+
+# C/C++ - fopen/sprintf 检测
+grep -rn 'fopen\s*(' --include='*.c' --include='*.cpp'
+grep -rn 'sprintf\s*(' --include='*.c' --include='*.cpp'
+grep -rn 'strcpy\s*(' --include='*.c' --include='*.cpp'
+```
+
+#### 1.2 路径拼接模式检测
+
+```bash
+# 检测 os.path.join / File 构造
+grep -rn 'os\.path\.join\s*(' --include='*.py'
+grep -rn 'new\s\+File\s*\([^)]*+\s*' --include='*.java'
+
+# 检测模板路径拼接
+grep -rn 'get_template\s*(' --include='*.py'
+grep -rn 'Template\s*\(' --include='*.java'
+```
+
+#### 1.3 规范化检测
+
+```bash
+# 检测是否有 normalize/realpath 校验
+grep -rn '\.normalize\s*(' --include='*.java'
+grep -rn 'realpath\s*(' --include='*.c'
+grep -rn 'startsWith\s*(' --include='*.java'
+```
+
+### 2. 危险模式
 
 ### Java
 ```java

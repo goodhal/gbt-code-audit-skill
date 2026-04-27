@@ -4,7 +4,58 @@
 
 反序列化漏洞发生在应用程序将不可信数据反序列化为对象时，可能导致远程代码执行。
 
-## 危险模式
+## 检测方法
+
+### 1. 静态代码检测
+
+#### 1.1 Java 反序列化检测
+
+```bash
+# ObjectInputStream/readObject 检测
+grep -rn 'ObjectInputStream\s*\(' --include='*.java'
+grep -rn 'readObject\s*\(\s*\)' --include='*.java'
+grep -rn 'readUnshared\s*\(\s*\)' --include='*.java'
+
+# XMLDecoder 检测
+grep -rn 'XMLDecoder\s*\(' --include='*.java'
+grep -rn 'decoder\.readObject\s*\(\s*\)' --include='*.java'
+
+# XStream 检测
+grep -rn 'XStream\s*\(' --include='*.java'
+grep -rn 'fromXML\s*\(\s*' --include='*.java'
+
+# Kryo 检测
+grep -rn 'Kryo\s*\(' --include='*.java'
+grep -rn 'kryo\.readObject\s*\(\s*\)' --include='*.java'
+```
+
+#### 1.2 Python 反序列化检测
+
+```bash
+# pickle 检测
+grep -rn 'pickle\.load\s*\(' --include='*.py'
+grep -rn 'pickle\.loads\s*\(' --include='*.py'
+grep -rn 'pickle\.Unpickler\s*\(' --include='*.py'
+
+# yaml 检测
+grep -rn 'yaml\.load\s*\(' --include='*.py'
+grep -rn 'yaml\.unsafe_load\s*\(' --include='*.py'
+
+# marshal 检测
+grep -rn 'marshal\.load\s*\(' --include='*.py'
+grep -rn 'marshal\.loads\s*\(' --include='*.py'
+```
+
+#### 1.3 JSON 反序列化（相对安全）
+
+```bash
+# 检测是否直接使用用户输入反序列化
+grep -rn 'ObjectMapper\s*\(\s*\)' --include='*.java'
+grep -rn 'readValue\s*\(\s*.*request' --include='*.java'
+grep -rn 'json\.loads\s*\(' --include='*.py'
+```
+
+### 2. 危险模式
 
 ### Java
 ```java

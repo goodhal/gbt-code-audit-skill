@@ -4,7 +4,59 @@
 
 命令注入漏洞发生在应用程序执行系统命令时，将用户可控输入传递给命令解释器。
 
-## 危险模式
+## 检测方法
+
+### 1. 静态代码检测
+
+#### 1.1 危险函数检测
+
+```bash
+# Java - Runtime.exec 检测
+grep -rn 'Runtime\.getRuntime\(\)\.exec' --include='*.java'
+grep -rn 'ProcessBuilder' --include='*.java'
+
+# Python - subprocess/system 检测
+grep -rn 'subprocess\.' --include='*.py'
+grep -rn 'os\.system' --include='*.py'
+grep -rn 'os\.popen' --include='*.py'
+
+# C/C++ - system/popen 检测
+grep -rn 'system\s*(' --include='*.c' --include='*.cpp'
+grep -rn 'popen\s*(' --include='*.c' --include='*.cpp'
+grep -rn 'exec\s*(' --include='*.c' --include='*.cpp'
+```
+
+#### 1.2 拼接模式检测
+
+```bash
+# 检测字符串拼接进入命令
+grep -rn '"\s*.*".*\+.*' --include='*.java' | grep -E 'exec|system|popen'
+grep -rn 'f".*".*.format' --include='*.py'
+grep -rn 'String\.format.*%s' --include='*.java'
+```
+
+#### 1.3 Shell=True 检测
+
+```bash
+# Python - shell=True 危险模式
+grep -rn 'shell\s*=\s*True' --include='*.py'
+```
+
+### 2. 污点分析
+
+追踪用户输入到命令执行的数据流：
+
+```
+用户输入 (args, env, stdin)
+    ↓
+命令构建
+    ↓
+ProcessBuilder / subprocess / system
+    ↓
+命令执行
+```
+
+### 3. 危险模式
 
 ### Java
 ```java

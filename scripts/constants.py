@@ -567,6 +567,12 @@ VULN_TYPE_TO_GBT_MAPPING = {
         "cpp": "GB/T39412-6.1.1.1 输入验证不足",
         "csharp": "GB/T34946-6.2.8.2 跨站请求伪造（CSRF）",
     },
+    "MISSING_CSRF_PROTECTION": {
+        "java": "GB/T39412-6.1.1.1 输入验证不足",
+        "python": "GB/T39412-6.1.1.1 输入验证不足",
+        "cpp": "GB/T39412-6.1.1.1 输入验证不足",
+        "csharp": "GB/T34946-6.2.8.2 跨站请求伪造（CSRF）",
+    },
     "HTTP_RESPONSE_SPLITTING": {
         "java": "GB/T39412-6.1.1.5 HTTP Head Web脚本特殊元素处理",
         "python": "GB/T39412-6.1.1.5 HTTP Head Web脚本特殊元素处理",
