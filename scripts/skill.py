@@ -1495,8 +1495,8 @@ def deduplicate_findings(findings: List[Dict]) -> tuple:
                 # 丢弃当前的
                 duplicates.append(finding)
     
-    # 更新被丢弃的 md 文件状态为"重复"
-    for dup in duplicates:
+    # 更新被丢弃的 md 文件状态为"重复"（并行版本）
+    def _update_dup_status(dup):
         md_file = dup.get('md_file', '')
         if md_file and Path(md_file).exists():
             try:
@@ -1512,11 +1512,15 @@ def deduplicate_findings(findings: List[Dict]) -> tuple:
             except:
                 pass
     
+    # 使用线程池并行更新md文件
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        executor.map(_update_dup_status, duplicates)
+    
     return list(dedup_dict.values()), duplicates
 
 # 计算统计信息
 def compute_stats(findings: List[Dict]) -> Dict:
-    """计算统计信息
+    """计算统计信息（并行版本）
     
     Args:
         findings: 审计发现列表
@@ -1524,6 +1528,72 @@ def compute_stats(findings: List[Dict]) -> Dict:
     Returns:
         统计信息字典
     """
+    severity_order = SEVERITY_ORDER
+    
+    def _compute_chunk(chunk):
+        """计算一个数据块的统计信息"""
+        chunk_stats = {
+            "total_count": len(chunk),
+            "severity_stats": {},
+            "source_stats": {},
+            "severity_source_stats": {},
+            "gbt_stats": {},
+            "gbt_prefix_stats": {},
+        }
+        
+        for finding in chunk:
+            severity = finding.get("severity", "未知")
+            source = finding.get("source", "未知")
+            
+            # 统计严重程度
+            chunk_stats["severity_stats"][severity] = chunk_stats["severity_stats"].get(severity, 0) + 1
+            
+            # 统计来源
+            chunk_stats["source_stats"][source] = chunk_stats["source_stats"].get(source, 0) + 1
+            
+            # 统计严重程度和来源的组合
+            severity_source_key = f"{severity}:{source}"
+            chunk_stats["severity_source_stats"][severity_source_key] = chunk_stats["severity_source_stats"].get(severity_source_key, 0) + 1
+            
+            # 统计国标映射
+            gbt_mapping = finding.get("gbt_mapping", "")
+            if gbt_mapping:
+                gbt_rules = []
+                for part in gbt_mapping.replace('；', ';').replace('，', ',').split(';'):
+                    for subpart in part.split(','):
+                        subpart = subpart.strip()
+                        if subpart:
+                            gbt_rules.append(subpart)
+                
+                counted_prefixes = set()
+                
+                for rule in gbt_rules:
+                    prefix = "OTHER"
+                    for valid_prefix in VALID_GBT_PREFIXES:
+                        if rule.startswith(valid_prefix):
+                            prefix = valid_prefix
+                            break
+
+                    chunk_stats["gbt_stats"][rule] = chunk_stats["gbt_stats"].get(rule, 0) + 1
+
+                    if prefix not in counted_prefixes:
+                        chunk_stats["gbt_prefix_stats"][prefix] = chunk_stats["gbt_prefix_stats"].get(prefix, 0) + 1
+                        counted_prefixes.add(prefix)
+        
+        return chunk_stats
+    
+    # 分片策略：根据数据量动态调整
+    chunk_size = max(1, len(findings) // MAX_WORKERS)
+    chunks = [findings[i:i + chunk_size] for i in range(0, len(findings), chunk_size)]
+    
+    # 并行计算
+    if len(chunks) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            chunk_results = list(executor.map(_compute_chunk, chunks))
+    else:
+        chunk_results = [_compute_chunk(findings)]
+    
+    # 合并统计结果
     stats = {
         "total_count": len(findings),
         "severity_stats": {},
@@ -1533,50 +1603,10 @@ def compute_stats(findings: List[Dict]) -> Dict:
         "gbt_prefix_stats": {},
     }
     
-    severity_order = SEVERITY_ORDER
-    
-    for finding in findings:
-        severity = finding.get("severity", "未知")
-        source = finding.get("source", "未知")
-        
-        # 统计严重程度
-        stats["severity_stats"][severity] = stats["severity_stats"].get(severity, 0) + 1
-        
-        # 统计来源
-        stats["source_stats"][source] = stats["source_stats"].get(source, 0) + 1
-        
-        # 统计严重程度和来源的组合
-        severity_source_key = f"{severity}:{source}"
-        stats["severity_source_stats"][severity_source_key] = stats["severity_source_stats"].get(severity_source_key, 0) + 1
-        
-        # 统计国标映射
-        gbt_mapping = finding.get("gbt_mapping", "")
-        if gbt_mapping:
-            gbt_rules = []
-            for part in gbt_mapping.replace('；', ';').replace('，', ',').split(';'):
-                for subpart in part.split(','):
-                    subpart = subpart.strip()
-                    if subpart:
-                        gbt_rules.append(subpart)
-            
-            # 用于跟踪已统计的国标前缀，确保每个漏洞只在每个国标分类中统计一次
-            counted_prefixes = set()
-            
-            for rule in gbt_rules:
-                # 提取国标前缀
-                prefix = "OTHER"
-                for valid_prefix in VALID_GBT_PREFIXES:
-                    if rule.startswith(valid_prefix):
-                        prefix = valid_prefix
-                        break
-
-                # 统计每个国标规则
-                stats["gbt_stats"][rule] = stats["gbt_stats"].get(rule, 0) + 1
-
-                # 确保每个漏洞只在每个国标分类中统计一次
-                if prefix not in counted_prefixes:
-                    stats["gbt_prefix_stats"][prefix] = stats["gbt_prefix_stats"].get(prefix, 0) + 1
-                    counted_prefixes.add(prefix)
+    for chunk_stats in chunk_results:
+        for key in ["severity_stats", "source_stats", "severity_source_stats", "gbt_stats", "gbt_prefix_stats"]:
+            for k, v in chunk_stats[key].items():
+                stats[key][k] = stats[key].get(k, 0) + v
     
     return stats
 
@@ -1794,7 +1824,7 @@ def _format_finding_to_markdown(finding: Dict, index: int) -> str:
 
 # 为发现补充漏洞评级信息
 def _enrich_findings_with_ratings(findings: List[Dict]) -> List[Dict]:
-    """为缺少评级信息的发现补充评级
+    """为缺少评级信息的发现补充评级（并行版本）
 
     Args:
         findings: 发现列表
@@ -1804,7 +1834,8 @@ def _enrich_findings_with_ratings(findings: List[Dict]) -> List[Dict]:
     """
     import re
 
-    for finding in findings:
+    def _enrich_single_finding(finding: Dict) -> Dict:
+        """为单个发现补充评级"""
         if not finding.get('vuln_id'):
             vuln_type = finding.get('type', 'UNKNOWN')
             severity = finding.get('severity', '未知')
@@ -1829,42 +1860,52 @@ def _enrich_findings_with_ratings(findings: List[Dict]) -> List[Dict]:
 
             if not finding.get('scoring_detail'):
                 finding['scoring_detail'] = f"{reachability}/{impact}/{complexity} (原始分: {raw_score})"
+        return finding
 
-    return findings
+    # 使用线程池并行处理
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(_enrich_single_finding, f) for f in findings]
+        results = [future.result() for future in concurrent.futures.as_completed(futures)]
+
+    return results
 
 # 加载所有发现
 def load_all_findings() -> List[Dict]:
-    """加载所有发现（包括误报状态，由finalize_report处理验证）
+    """加载所有发现（包括误报状态，由finalize_report处理验证）（并行版本）
 
     Returns:
         List[Dict]: 所有发现（包括误报状态）
     """
     findings = []
 
-    # 加载快速扫描的发现
+    def _parse_md_file(md_file: Path) -> Optional[Dict]:
+        """解析单个md文件"""
+        try:
+            content = md_file.read_text(encoding='utf-8')
+            return parse_finding_md(content)
+        except Exception as e:
+            print(f"解析文件失败 {md_file}: {e}")
+            return None
+
+    # 收集所有需要解析的md文件
+    md_files = []
+
     baseline_dir = BASELINE_DIR
     if baseline_dir.exists():
-        for md_file in baseline_dir.glob("*.md"):
-            try:
-                content = md_file.read_text(encoding='utf-8')
-                finding = parse_finding_md(content)
-                if finding:
-                    findings.append(finding)
-            except Exception as e:
-                print(f"解析文件失败 {md_file}: {e}")
+        md_files.extend(baseline_dir.glob("*.md"))
 
-    # 加载LLM审计的发现
     llm_audit_dir = LLM_AUDIT_DIR
     if llm_audit_dir.exists():
-        for md_file in llm_audit_dir.glob("*.md"):
-            try:
-                content = md_file.read_text(encoding='utf-8')
-                finding = parse_finding_md(content)
-                if finding:
-                    findings.append(finding)
-            except Exception as e:
-                print(f"解析文件失败 {md_file}: {e}")
-    
+        md_files.extend(llm_audit_dir.glob("*.md"))
+
+    # 使用线程池并行解析
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(_parse_md_file, f) for f in md_files]
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result:
+                findings.append(result)
+
     return findings
 
 # 生成报告模板
@@ -2083,10 +2124,20 @@ def finalize_report(
         
         placeholder = "<!-- DETAILED_FINDINGS_PLACEHOLDER -->"
         if placeholder in report_content:
-            formatted_findings = []
-            for idx, f in enumerate(effective_findings, 1):
-                formatted = _format_finding_to_markdown(f, idx)
-                formatted_findings.append(formatted)
+            # 并行格式化每个finding
+            def _format_single(idx_finding):
+                idx, f = idx_finding
+                return _format_finding_to_markdown(f, idx)
+            
+            indexed_findings = list(enumerate(effective_findings, 1))
+            formatted_findings = [None] * len(indexed_findings)
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = {executor.submit(_format_single, item): i for i, item in enumerate(indexed_findings)}
+                for future in concurrent.futures.as_completed(futures):
+                    idx_in_list = futures[future]
+                    formatted_findings[idx_in_list] = future.result()
+            
             merged_findings = "\n\n".join(formatted_findings)
             
             # 替换详细发现
@@ -2103,15 +2154,24 @@ def finalize_report(
         
         report_path.write_text(report_content, encoding="utf-8")
         
-        # 验证修复质量（只验证有效发现）
+        # 验证修复质量（只验证有效发现）- 并行版本
         fix_validation_issues = []
-        for finding in effective_findings:
+        
+        def _validate_single_fix(finding):
             validation = validate_fix_format(finding)
             if not validation["valid"]:
-                fix_validation_issues.append({
+                return {
                     "id": finding.get("id", "unknown"),
                     "issues": validation["issues"]
-                })
+                }
+            return None
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = [executor.submit(_validate_single_fix, f) for f in effective_findings]
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result:
+                    fix_validation_issues.append(result)
         
         # 生成验证结果
         validation_result = {
